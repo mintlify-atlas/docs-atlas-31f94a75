@@ -1,0 +1,205 @@
+---
+title: init
+description: Install agent skill for JFR profiling analysis
+---
+
+The `init` command installs the ap-query skill template into your coding agent's skill directory, enabling agents to profile and analyze Java applications autonomously.
+
+## Usage
+
+```bash
+ap-query init [flags]
+```
+
+## What it does
+
+The `init` command:
+
+1. **Detects or downloads async-profiler** - Finds `asprof` on your system or offers to download it
+2. **Renders the skill template** - Embeds `ap-query` and `asprof` paths into the skill file
+3. **Installs to agent directory** - Writes `SKILL.md` to your agent's skill location
+
+After installation, agents can automatically profile applications and analyze results when prompted.
+
+## Installation modes
+
+### Global installation (recommended)
+
+Install for all projects:
+
+```bash
+ap-query init
+```
+
+Agent-specific global install:
+
+```bash
+ap-query init --claude    # Claude Code only
+ap-query init --codex     # Codex only
+```
+
+**Claude**: Installs to `~/.claude/skills/jfr/SKILL.md`  
+**Codex**: Installs to `~/.codex/skills/jfr/SKILL.md` (or `$CODEX_HOME`)
+
+### Project-local installation
+
+Install for the current project only:
+
+```bash
+ap-query init --project
+```
+
+Agent-specific project install:
+
+```bash
+ap-query init --project --claude    # Claude Code
+ap-query init --project --codex     # Codex
+```
+
+**Claude**: Installs to `.claude/skills/jfr/SKILL.md`  
+**Codex**: Installs to `.agents/skills/jfr/SKILL.md`
+
+## Flags
+
+<ParamField path="--asprof" type="string">
+  Explicit path to `asprof` binary. Skips auto-detection and interactive prompt.
+  
+  ```bash
+  ap-query init --asprof /usr/local/bin/asprof
+  ```
+</ParamField>
+
+<ParamField path="--project" type="boolean" default={false}>
+  Install to current directory instead of home directory.
+  
+  ```bash
+  ap-query init --project
+  ```
+</ParamField>
+
+<ParamField path="--force" type="boolean" default={false}>
+  Overwrite existing skill files without prompting.
+  
+  ```bash
+  ap-query init --force
+  ```
+</ParamField>
+
+<ParamField path="--claude" type="boolean" default={false}>
+  Install only for Claude Code (`.claude/skills/jfr/`).
+</ParamField>
+
+<ParamField path="--codex" type="boolean" default={false}>
+  Install only for Codex (`.codex/skills/jfr/` global, `.agents/skills/jfr/` project).
+</ParamField>
+
+<ParamField path="--stdout" type="boolean" default={false}>
+  Dump rendered skill to stdout instead of installing. Useful for piping into custom agents.
+  
+  ```bash
+  ap-query init --stdout > my-agent/skills/profiling.md
+  ```
+</ParamField>
+
+## async-profiler detection
+
+The `init` command attempts to find `asprof` in this order:
+
+1. **Explicit `--asprof` flag** - Use the provided path
+2. **PATH search** - Look for `asprof` in `$PATH`
+3. **Common locations** - Check `/usr/local/bin`, `~/.ap-query/`, etc.
+4. **Interactive download** - Offer to download async-profiler to `~/.ap-query/`
+
+If async-profiler is not found and you decline the download, `init` will still create the skill but agents won't be able to profile until you install async-profiler manually.
+
+## Examples
+
+### Standard setup
+
+Install for both Claude Code and Codex globally:
+
+```bash
+ap-query init
+```
+
+### Project-specific setup
+
+Install for this project only (commits `.claude/` or `.agents/` to version control):
+
+```bash
+ap-query init --project
+```
+
+### Custom async-profiler location
+
+Specify async-profiler path explicitly:
+
+```bash
+ap-query init --asprof /opt/async-profiler/bin/asprof
+```
+
+### Preview skill content
+
+Print the rendered skill without installing:
+
+```bash
+ap-query init --stdout
+```
+
+### Force reinstall
+
+Overwrite existing skill (useful after updating ap-query):
+
+```bash
+ap-query init --force
+```
+
+## Updating skills
+
+After running `ap-query update` to upgrade the binary, skills are automatically regenerated if they were previously installed globally. For project-local skills, re-run `ap-query init --project --force` to update them.
+
+## Agent usage
+
+Once installed, ask your agent:
+
+```
+Profile this Java application with async-profiler and analyze the results.
+Start with hotspot triage, then drill down and report concrete next actions.
+```
+
+The agent will:
+- Identify the Java process
+- Profile with `asprof`
+- Analyze with `ap-query info`, `hot`, `tree`, `trace`, etc.
+- Provide actionable optimization recommendations
+
+## Troubleshooting
+
+<Accordion title="Skill not activating">
+  Some agents auto-activate skills based on context (e.g., profiling keywords). If not, explicitly mention "use ap-query" or "analyze with the profiling skill."
+</Accordion>
+
+<Accordion title="Permission denied on skill directory">
+  Check directory permissions for `~/.claude/` or `~/.codex/`. Create manually if needed:
+  
+  ```bash
+  mkdir -p ~/.claude/skills/jfr
+  ap-query init --force
+  ```
+</Accordion>
+
+<Accordion title="Agent uses old skill version">
+  After updating ap-query, force reinstall:
+  
+  ```bash
+  ap-query init --force
+  ```
+  
+  Restart your agent if it caches skills.
+</Accordion>
+
+## See also
+
+- [Agent integration guide](/guides/agent-integration) - Complete workflow and examples
+- [Installation](/installation) - Initial setup instructions
+- [update](/commands/update) - Update ap-query and regenerate skills

@@ -1,0 +1,216 @@
+---
+title: update
+description: Download and install the latest ap-query release
+---
+
+The `update` command downloads and installs the latest ap-query release from GitHub, replacing the current binary with the new version.
+
+## Usage
+
+```bash
+ap-query update [flags]
+```
+
+## What it does
+
+The `update` command:
+
+1. **Checks for updates** - Queries GitHub API for the latest release
+2. **Downloads the binary** - Fetches the appropriate archive for your OS/architecture
+3. **Verifies checksums** - Validates integrity using SHA256 checksums
+4. **Replaces the binary** - Atomically updates the current executable
+5. **Regenerates skills** - Updates globally installed agent skills automatically
+
+<Note>
+  The update is atomic - if anything fails, your current binary remains unchanged.
+</Note>
+
+## Examples
+
+### Standard update
+
+Update to the latest release:
+
+```bash
+ap-query update
+```
+
+Output:
+
+```
+Updating ap-query v0.2.1 → v0.3.0 ...
+Successfully updated to ap-query v0.3.0
+Regenerated global skills: ~/.claude/skills/jfr/SKILL.md
+```
+
+### Force update from dev build
+
+Force update even if you're running a development build:
+
+```bash
+ap-query update --force
+```
+
+<Warning>
+  Use `--force` carefully with dev or `go install` builds - it will replace your custom build with the latest release.
+</Warning>
+
+## Flags
+
+<ParamField path="--force" type="boolean" default={false}>
+  Force update even for dev or `go install` builds.
+  
+  By default, `update` refuses to replace dev builds or Go-installed binaries. Use `--force` to override.
+</ParamField>
+
+## Installation detection
+
+The `update` command detects how ap-query was installed:
+
+### Release binary
+
+Standard installation (via `curl | sh` or manual download):
+
+```bash
+ap-query update
+```
+
+Updates normally.
+
+### go install
+
+Installed via `go install github.com/jerrinot/ap-query@latest`:
+
+```
+error: cannot self-update a dev build; use 'go install' or download a release binary
+```
+
+Update with Go:
+
+```bash
+go install github.com/jerrinot/ap-query@latest
+```
+
+Or force-replace with release binary:
+
+```bash
+ap-query update --force
+```
+
+### Development build
+
+Built from source (version shows "dev"):
+
+```
+error: cannot self-update a dev build; use 'go install' or download a release binary
+```
+
+Rebuild from source or use `--force` to replace with a release.
+
+## Skill regeneration
+
+After updating, `update` automatically regenerates any globally installed agent skills:
+
+- `~/.claude/skills/jfr/SKILL.md` (Claude Code)
+- `~/.codex/skills/jfr/SKILL.md` (Codex)
+
+This ensures skills reference the new binary path and include any new features or commands.
+
+<Info>
+  Project-local skills (`.claude/` or `.agents/` in your project) are **not** automatically updated. Re-run `ap-query init --project --force` to update them.
+</Info>
+
+## Version checking
+
+Check your current version and see if updates are available:
+
+```bash
+ap-query version
+```
+
+Output:
+
+```
+ap-query version v0.2.1
+A newer version is available: v0.3.0
+  https://github.com/jerrinot/ap-query/releases/latest
+```
+
+Then update:
+
+```bash
+ap-query update
+```
+
+## Network requirements
+
+The `update` command requires internet access to:
+
+- Query GitHub API: `https://api.github.com/repos/jerrinot/ap-query/releases/latest`
+- Download release archive: `https://github.com/jerrinot/ap-query/releases/download/...`
+
+If behind a proxy, ensure `https_proxy` environment variable is set.
+
+## Platform support
+
+The `update` command downloads the correct binary for your platform:
+
+- **Linux**: `ap-query_linux_amd64.tar.gz`, `ap-query_linux_arm64.tar.gz`
+- **macOS**: `ap-query_darwin_amd64.tar.gz`, `ap-query_darwin_arm64.tar.gz`
+- **Windows**: `ap-query_windows_amd64.zip`, `ap-query_windows_arm64.zip`
+
+Architecture is detected automatically from `runtime.GOOS` and `runtime.GOARCH`.
+
+## Rollback
+
+If you need to revert to a previous version:
+
+1. Download the old release from [GitHub releases](https://github.com/jerrinot/ap-query/releases)
+2. Extract and replace the binary manually
+3. Run `ap-query init --force` to regenerate skills
+
+There is no automatic rollback mechanism.
+
+## Troubleshooting
+
+<Accordion title="Update fails with checksum mismatch">
+  The downloaded archive doesn't match the expected SHA256. This usually indicates:
+  
+  - Network corruption during download
+  - Incomplete download
+  - Proxy interference
+  
+  Retry the update. If it persists, download manually from GitHub releases.
+</Accordion>
+
+<Accordion title="Permission denied replacing binary">
+  The current binary location requires elevated permissions. Options:
+  
+  - Run with `sudo`: `sudo ap-query update` (not recommended)
+  - Reinstall to user directory: Download to `~/bin` and add to PATH
+  - Use `go install` instead for user-local installation
+</Accordion>
+
+<Accordion title="Update says already latest version">
+  You're already running the latest release. To force a reinstall:
+  
+  ```bash
+  ap-query update --force
+  ```
+</Accordion>
+
+<Accordion title="Cannot update go install build">
+  If you installed with `go install`, update via Go:
+  
+  ```bash
+  go install github.com/jerrinot/ap-query@latest
+  ```
+  
+  Or switch to release binaries with `--force`.
+</Accordion>
+
+## See also
+
+- [version](/commands/version) - Check current version and available updates
+- [init](/commands/init) - Install agent skills
+- [Installation](/installation) - Initial installation instructions

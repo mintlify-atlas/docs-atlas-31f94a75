@@ -55,7 +55,10 @@
               "commands/collapse",
               "commands/lines",
               "commands/events",
-              "commands/script"
+              "commands/script",
+              "commands/init",
+              "commands/update",
+              "commands/version"
             ]
           },
           {

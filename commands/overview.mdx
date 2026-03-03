@@ -37,6 +37,54 @@ description: Complete reference for all ap-query commands
   </Card>
 </CardGroup>
 
+## Comparison & Transformation
+
+<CardGroup cols={2}>
+  <Card title="diff" icon="code-compare" href="/commands/diff">
+    Compare profiles to detect regressions and improvements
+  </Card>
+  
+  <Card title="filter" icon="filter" href="/commands/filter">
+    Extract stacks matching a method pattern
+  </Card>
+  
+  <Card title="collapse" icon="compress" href="/commands/collapse">
+    Convert to collapsed-stack format for external tools
+  </Card>
+  
+  <Card title="lines" icon="list-ol" href="/commands/lines">
+    Line-by-line breakdown within methods
+  </Card>
+</CardGroup>
+
+## Advanced Analysis
+
+<CardGroup cols={2}>
+  <Card title="events" icon="tags" href="/commands/events">
+    List available event types in a profile
+  </Card>
+  
+  <Card title="script" icon="code" href="/commands/script">
+    Starlark scripting for custom analysis
+  </Card>
+</CardGroup>
+
+## Maintenance
+
+<CardGroup cols={2}>
+  <Card title="init" icon="download" href="/commands/init">
+    Install agent skill for profiling automation
+  </Card>
+  
+  <Card title="update" icon="arrow-up" href="/commands/update">
+    Update ap-query to the latest release
+  </Card>
+  
+  <Card title="version" icon="tag" href="/commands/version">
+    Show version and check for updates
+  </Card>
+</CardGroup>
+
 ## Command Quick Reference
 
 | Command | Purpose | Key Flags |
@@ -48,6 +96,15 @@ description: Complete reference for all ap-query commands
 | **callers** | Ascending caller tree | `-m/--method` (required), `--depth`, `--min-pct`, `--hide` |
 | **threads** | Thread distribution | `--top`, `--group` |
 | **timeline** | Time-based analysis | `--buckets`, `--resolution`, `--compare`, `-m/--method` |
+| **diff** | Profile comparison | `--min-delta`, `--top`, `--fqn`, `--from/--to`, `--vs-from/--vs-to` |
+| **filter** | Stack extraction | `-m/--method` (required), `--include-callers` |
+| **collapse** | Format conversion | N/A (uses shared flags) |
+| **lines** | Line-level breakdown | `-m/--method` (required), `--top`, `--fqn` |
+| **events** | List event types | N/A |
+| **script** | Custom scripting | `-c/--code` or file path |
+| **init** | Install agent skill | `--project`, `--force`, `--claude`, `--codex` |
+| **update** | Update binary | `--force` |
+| **version** | Show version | N/A |
 
 ## Common Flags
 
@@ -84,11 +141,11 @@ ap-query <command> [flags] <file>
 ## Next Steps
 
 <CardGroup cols={2}>
-  <Card title="Getting Started" icon="rocket" href="/getting-started">
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
     Learn the basics of using ap-query
   </Card>
   
-  <Card title="Common Workflows" icon="diagram-next" href="/workflows">
-    See practical analysis examples
+  <Card title="Profiling Workflow" icon="diagram-next" href="/concepts/profiling-workflow">
+    See the complete analysis workflow
   </Card>
 </CardGroup>

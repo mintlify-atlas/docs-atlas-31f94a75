@@ -1,0 +1,119 @@
+---
+title: version
+description: Print ap-query version and check for updates
+---
+
+The `version` command displays the current ap-query version and checks if a newer release is available on GitHub.
+
+## Usage
+
+```bash
+ap-query version
+```
+
+## Output
+
+### Up to date
+
+```
+ap-query version v0.3.0
+```
+
+### Update available
+
+```
+ap-query version v0.2.1
+A newer version is available: v0.3.0
+  https://github.com/jerrinot/ap-query/releases/latest
+```
+
+## Version formats
+
+The version string follows semantic versioning:
+
+### Release builds
+
+Format: `v0.3.0`, `v1.0.0`, `v1.2.3`
+
+Built from GitHub releases. These can be updated with `ap-query update`.
+
+### Development builds
+
+Format: `dev`
+
+Built from source without a version tag. These cannot be auto-updated with `ap-query update` (use `--force` to replace with a release).
+
+### go install builds
+
+Format: varies (often includes commit hash)
+
+Installed via `go install`. Update with `go install github.com/jerrinot/ap-query@latest` instead of `ap-query update`.
+
+## Checking for updates
+
+The `version` command queries the GitHub API for the latest release:
+
+```bash
+ap-query version
+```
+
+If a newer version exists, you'll see:
+
+```
+A newer version is available: v0.3.0
+  https://github.com/jerrinot/ap-query/releases/latest
+```
+
+Then update:
+
+```bash
+ap-query update
+```
+
+<Note>
+  The update check times out after 3 seconds. If GitHub is unreachable, the command still prints your current version without the update notification.
+</Note>
+
+## Root command version
+
+You can also get the version from the root command:
+
+```bash
+ap-query --version
+```
+
+This prints the version and exits, equivalent to `ap-query version`.
+
+## CI/automation usage
+
+Use `version` in scripts to verify installation:
+
+```bash
+#!/bin/bash
+ap-query version || { echo "ap-query not installed"; exit 1; }
+```
+
+Or check minimum version:
+
+```bash
+VERSION=$(ap-query version | grep -oP 'v\d+\.\d+\.\d+' | head -1)
+if [[ "$VERSION" < "v0.3.0" ]]; then
+  echo "ap-query v0.3.0 or higher required"
+  exit 1
+fi
+```
+
+## Network requirements
+
+The update check requires internet access to query:
+
+```
+https://api.github.com/repos/jerrinot/ap-query/releases/latest
+```
+
+If offline or behind a restrictive firewall, the check will timeout silently and only your current version will be displayed.
+
+## See also
+
+- [update](/commands/update) - Download and install the latest release
+- [Installation](/installation) - Initial installation instructions
