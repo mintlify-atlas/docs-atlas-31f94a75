@@ -1,0 +1,799 @@
+---
+title: script
+description: Starlark scripting for custom profile analysis
+---
+
+## Overview
+
+The `script` command enables powerful, programmable profile analysis using **Starlark** (a Python dialect). Use scripts to:
+- Implement custom analysis logic
+- Automate CI performance checks
+- Build advanced filtering and aggregation
+- Generate custom reports
+- Compare time windows within recordings
+
+Starlark is Python-like but simplified: no classes, no imports, no exceptions, but with functions, loops, conditionals, and rich standard libraries.
+
+## Usage
+
+```bash
+# Run inline script
+ap-query script -c '<code>' [-- ARGS...]
+
+# Run script file
+ap-query script <file.star> [-- ARGS...]
+
+# With flags
+ap-query script [-c CODE | FILE] [--timeout DURATION] [-- ARGS...]
+```
+
+## Flags
+
+<ParamField path="-c" type="string">
+  Execute inline Starlark code (alternative to providing a file)
+</ParamField>
+
+<ParamField path="--timeout" type="duration" default="30s">
+  Script execution timeout (e.g., "1m", "90s")
+</ParamField>
+
+<ParamField path="-- ARGS...">
+  Arguments passed to the script (accessible via `ARGS` list)
+</ParamField>
+
+## Quick Start
+
+### Hello World
+
+```bash
+ap-query script -c 'print("Hello from Starlark!")'
+```
+
+### Load and Analyze a Profile
+
+```bash
+ap-query script -c '
+p = open("profile.jfr")
+for m in p.hot(5):
+    print(m.name, str(m.self_pct) + "%")
+'
+```
+
+### Run Script File
+
+Create `analyze.star`:
+```python
+p = open("profile.jfr")
+print("Total samples:", p.samples)
+print("Duration:", p.duration, "seconds")
+
+for m in p.hot(10):
+    print("%5.1f%% %s" % (m.self_pct, m.name))
+```
+
+Run it:
+```bash
+ap-query script analyze.star
+```
+
+## Predeclared Globals
+
+### ARGS
+
+`ARGS` is a list of strings containing script arguments:
+
+```bash
+ap-query script myscript.star -- profile.jfr 10 --verbose
+```
+
+In `myscript.star`:
+```python
+print(ARGS)  # ["profile.jfr", "10", "--verbose"]
+profile_path = ARGS[0]
+top_n = int(ARGS[1])
+verbose = len(ARGS) > 2 and ARGS[2] == "--verbose"
+```
+
+### Built-in Functions
+
+Starlark includes standard built-ins:
+- **Iteration**: `len`, `sorted`, `enumerate`, `range`, `reversed`
+- **Conversion**: `str`, `int`, `float`, `list`, `dict`, `bool`
+- **Aggregation**: `min`, `max`, `sum`, `any`, `all`
+- **Inspection**: `type`, `hasattr`, `dir`, `repr`
+- **Functional**: `zip`, `map` (via list comprehensions)
+
+## Core Functions
+
+### open()
+
+Load a profile:
+
+```python
+open(path, event="cpu", start="", end="", thread="") → Profile
+```
+
+<ParamField path="path" type="string" required>
+  Path to profile file (JFR, pprof, or collapsed text). Use `"-"` for stdin.
+</ParamField>
+
+<ParamField path="event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter
+</ParamField>
+
+<ParamField path="start" type="duration">
+  Time window start (JFR only), e.g., `"5s"`, `"1m30s"`
+</ParamField>
+
+<ParamField path="end" type="duration">
+  Time window end (JFR only)
+</ParamField>
+
+<ParamField path="thread" type="string">
+  Filter to threads matching substring
+</ParamField>
+
+Examples:
+```python
+# Basic
+p = open("profile.jfr")
+
+# Specific event
+p = open("profile.jfr", event="alloc")
+
+# Time window
+p = open("profile.jfr", start="1m", end="2m")
+
+# Thread filter
+p = open("profile.jfr", thread="worker")
+
+# Combined
+p = open("profile.jfr", event="wall", start="30s", thread="http")
+```
+
+### diff()
+
+Compare two profiles:
+
+```python
+diff(a, b, min_delta=0.5, top=0, fqn=False) → Diff
+```
+
+<ParamField path="a" type="Profile" required>
+  First ("before") profile
+</ParamField>
+
+<ParamField path="b" type="Profile" required>
+  Second ("after") profile
+</ParamField>
+
+<ParamField path="min_delta" type="float" default="0.5">
+  Minimum percentage change to include
+</ParamField>
+
+<ParamField path="top" type="int" default="0">
+  Limit entries per category (0 = unlimited)
+</ParamField>
+
+<ParamField path="fqn" type="boolean" default="False">
+  Use fully-qualified names
+</ParamField>
+
+Example:
+```python
+before = open("before.jfr")
+after = open("after.jfr")
+d = diff(before, after, min_delta=1.0)
+
+for e in d.regressions:
+    print(e.name, "+" + str(e.delta) + "%")
+```
+
+### emit() and emit_all()
+
+Output stacks in collapsed format:
+
+```python
+emit(stack)       # Output one stack
+emit_all(profile) # Output all stacks
+```
+
+Example pipeline:
+```python
+p = open("profile.jfr")
+for s in p.stacks:
+    if s.has("HashMap"):
+        emit(s)
+```
+
+Run and pipe:
+```bash
+ap-query script filter.star | ap-query hot -
+```
+
+### match()
+
+Regex matching:
+
+```python
+match(string, pattern) → bool
+```
+
+Example:
+```python
+if match(s.leaf.name, r".*Service$"):
+    print("Service method:", s.leaf.name)
+```
+
+### round()
+
+Round floats (Starlark lacks printf precision):
+
+```python
+round(x, decimals=0) → float
+```
+
+Example:
+```python
+print(str(round(42.6789, 2)) + "%")  # "42.68%"
+```
+
+### ljust() and rjust()
+
+String alignment (Starlark lacks printf width):
+
+```python
+ljust(value, width) → string
+rjust(value, width) → string
+```
+
+Example:
+```python
+for m in p.hot(5):
+    pct = rjust(round(m.self_pct, 1), 6)
+    print(pct + "%  " + m.name)
+```
+
+Output:
+```
+  18.2%  HashMap.resize
+  12.1%  String.concat
+   9.7%  ArrayList.grow
+```
+
+### fail() and warn()
+
+Error handling:
+
+```python
+fail(msg)  # Print to stderr, exit code 1
+warn(msg)  # Print to stderr, continue
+```
+
+Example:
+```python
+p = open("profile.jfr")
+if p.samples < 1000:
+    fail("Too few samples: " + str(p.samples))
+```
+
+## Types
+
+### Profile
+
+A loaded profile scoped to one event type.
+
+**Fields:**
+```python
+p.stacks        # list[Stack] - all stacks
+p.samples       # int - total sample count
+p.duration      # float - seconds (0 if unavailable)
+p.start         # float - seconds from recording start
+p.end           # float - seconds from recording start
+p.event         # string - selected event type
+p.events        # list[string] - all available events
+p.path          # string - source file path
+```
+
+**Methods:**
+```python
+p.hot(n=all, fqn=False, sort="self") → list[Method]
+    # Top methods by self time or total time
+    # sort: "self" (default) or "total"
+
+p.threads(n=all) → list[Thread]
+    # Thread sample distribution
+
+p.filter(fn) → Profile
+    # Keep stacks where fn(stack) returns True
+
+p.group_by(fn) → dict[str, Profile]
+    # Partition by fn(stack) → key. fn returning None excludes.
+
+p.timeline(resolution="10s", buckets=None) → list[Bucket]
+    # Time-series buckets (JFR only)
+    # resolution: duration string or keyword arg with numeric seconds
+
+p.split(times) → list[Profile]
+    # Split at time boundaries (JFR only)
+    # times: list of floats (seconds) or duration strings
+
+p.tree(method="", depth=4, min_pct=1.0) → string
+    # Call tree from method (or root if "")
+
+p.trace(method, min_pct=0.5, fqn=False) → string
+    # Hottest path from method
+
+p.callers(method, depth=4, min_pct=1.0) → string
+    # Callers tree toward root
+
+p.no_idle() → Profile
+    # Remove idle leaf frames
+
+p.summary() → string
+    # One-line summary
+```
+
+Example:
+```python
+p = open("profile.jfr")
+print(p.summary())
+
+# Top 5 by self time
+for m in p.hot(5):
+    print(m.name, m.self_pct)
+
+# Top 5 by total time
+for m in p.hot(5, sort="total"):
+    print(m.name, m.total_pct)
+
+# Filter
+serialize = p.filter(lambda s: s.has("Serialize"))
+print("Serialization samples:", serialize.samples)
+
+# Group by thread pool
+groups = p.group_by(lambda s: s.thread.split("-")[0] if s.thread else None)
+for name, prof in groups.items():
+    print(name, prof.samples)
+```
+
+### Stack
+
+A call stack with sample count.
+
+**Fields:**
+```python
+s.frames   # list[Frame] - frames[0] is root, frames[-1] is leaf
+s.thread   # string - thread name
+s.samples  # int - sample count
+s.leaf     # Frame or None
+s.root     # Frame or None
+s.depth    # int - frame count
+```
+
+**Methods:**
+```python
+s.has(pattern) → bool
+    # Substring match on any frame (short name or FQN)
+
+s.has_seq(p1, p2, ...) → bool
+    # Patterns appear in order (not necessarily adjacent)
+
+s.above(pattern) → list[Frame]
+    # Frames toward leaf from first match
+    # above[0] is direct callee
+
+s.below(pattern) → list[Frame]
+    # Frames toward root from first match
+    # below[-1] is direct caller
+
+s.thread_has(pattern) → bool
+    # Substring match on thread name
+```
+
+Example:
+```python
+for s in p.stacks:
+    if s.has("HashMap") and s.depth > 10:
+        print(s.thread, s.samples, s.leaf.name)
+
+    if s.has_seq("Service.handle", "HashMap.put"):
+        print("Service → HashMap path found")
+
+    if s.leaf.name == "__sched_yield":
+        callers = s.below("__sched_yield")
+        if len(callers) > 0:
+            print("Yield called by:", callers[-1].name)
+```
+
+### Frame
+
+A single stack frame.
+
+**Fields:**
+```python
+f.name    # string - short name (e.g., "HashMap.put")
+f.fqn     # string - fully-qualified (e.g., "java.util.HashMap.put")
+f.pkg     # string - package (e.g., "java.util")
+f.cls     # string - class (e.g., "HashMap")
+f.method  # string - method (e.g., "put")
+f.line    # int - source line (0 if unavailable)
+```
+
+Example:
+```python
+for s in p.stacks:
+    leaf = s.leaf
+    if leaf and leaf.pkg.startswith("com.example"):
+        loc = leaf.name
+        if leaf.line > 0:
+            loc += ":" + str(leaf.line)
+        print(loc, s.samples)
+```
+
+### Method
+
+Returned by `Profile.hot()`.
+
+**Fields:**
+```python
+m.name       # string - method name
+m.fqn        # string - fully-qualified name
+m.self       # int - self samples
+m.self_pct   # float - self percentage
+m.total      # int - total samples (self + descendants)
+m.total_pct  # float - total percentage
+```
+
+Example:
+```python
+for m in p.hot(10):
+    print("%5.1f%% self, %5.1f%% total  %s" % (m.self_pct, m.total_pct, m.name))
+```
+
+### Thread
+
+Returned by `Profile.threads()`.
+
+**Fields:**
+```python
+t.name     # string - thread name
+t.samples  # int - sample count
+t.pct      # float - percentage of total
+```
+
+Example:
+```python
+for t in p.threads(5):
+    print(t.name, str(t.pct) + "%", t.samples)
+```
+
+### Bucket
+
+Returned by `Profile.timeline()`.
+
+**Fields:**
+```python
+b.start    # float - start time in seconds
+b.end      # float - end time in seconds
+b.samples  # int - sample count
+b.stacks   # list[Stack] - stacks in this bucket
+b.label    # string - formatted time range (e.g., "4m20.0s-4m30.0s")
+b.profile  # Profile - full profile for this bucket
+```
+
+**Methods:**
+```python
+b.hot(n=5, sort="self") → list[Method]
+    # Top methods in this bucket
+```
+
+Example:
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="10s")
+
+for b in buckets:
+    print(b.label, "samples:", b.samples)
+    if b.samples > 0:
+        top = b.hot(1)
+        if len(top) > 0:
+            print("  Top:", top[0].name, str(top[0].self_pct) + "%")
+```
+
+### Diff
+
+Returned by `diff()`.
+
+**Fields:**
+```python
+d.regressions  # list[DiffEntry] - got worse
+d.improvements # list[DiffEntry] - got better
+d.added        # list[DiffEntry] - new in second profile
+d.removed      # list[DiffEntry] - only in first profile
+d.all          # list[DiffEntry] - all above, sorted by |delta|
+```
+
+Example:
+```python
+d = diff(before, after, min_delta=2.0)
+
+if len(d.regressions) > 0:
+    print("REGRESSIONS:")
+    for e in d.regressions:
+        print("  %s: %.1f%% → %.1f%% (+%.1f%%)" % 
+              (e.name, e.before, e.after, e.delta))
+```
+
+### DiffEntry
+
+Entry in a `Diff`.
+
+**Fields:**
+```python
+e.name    # string - method name
+e.fqn     # string - fully-qualified name
+e.before  # float - percentage in first profile
+e.after   # float - percentage in second profile
+e.delta   # float - change (after - before)
+```
+
+## Examples
+
+### CI Performance Budget
+
+Fail if serialization exceeds 10%:
+
+```python
+p = open(ARGS[0])
+ser = p.filter(lambda s: s.has("Serialization"))
+pct = 100.0 * ser.samples / p.samples
+if pct > 10.0:
+    fail("Serialization too high: " + str(round(pct, 1)) + "%")
+print("Serialization OK: " + str(round(pct, 1)) + "%")
+```
+
+Run:
+```bash
+ap-query script check-budget.star -- profile.jfr
+```
+
+### Window Comparison
+
+Compare early vs late execution:
+
+```python
+p = open("profile.jfr")
+parts = p.split([p.duration / 2])
+d = diff(parts[0], parts[1])
+
+if len(d.regressions) > 0:
+    print("Methods got worse in second half:")
+    for e in d.regressions:
+        print("  " + e.name + " +" + str(round(e.delta, 1)) + "%")
+else:
+    print("No significant regressions")
+```
+
+### Timeline Hot Methods
+
+Show top method per time bucket:
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="30s")
+
+for b in buckets:
+    if b.samples > 0:
+        top = b.hot(1)
+        if len(top) > 0:
+            print(b.label, top[0].name, str(round(top[0].self_pct, 1)) + "%")
+```
+
+### Thread Pool Analysis
+
+Group by thread pool prefix:
+
+```python
+p = open("profile.jfr")
+groups = p.group_by(lambda s: s.thread.split("-")[0] if s.thread else None)
+
+print("Thread pool distribution:")
+for name in sorted(groups.keys()):
+    prof = groups[name]
+    pct = 100.0 * prof.samples / p.samples
+    print("  " + ljust(name, 20) + rjust(str(round(pct, 1)) + "%", 8))
+```
+
+### Caller Analysis
+
+Find who calls a leaf method:
+
+```python
+p = open("profile.jfr")
+callers = {}
+
+for s in p.stacks:
+    if s.leaf and s.leaf.name == "__sched_yield":
+        below = s.below("__sched_yield")
+        if len(below) > 0:
+            caller = below[-1].name
+            callers[caller] = callers.get(caller, 0) + s.samples
+
+for name, count in sorted(callers.items(), key=lambda x: x[1], reverse=True)[:10]:
+    print(str(count) + "  " + name)
+```
+
+### Custom Report
+
+Generate formatted report:
+
+```python
+p = open(ARGS[0])
+
+print("=" * 60)
+print("Profile Report")
+print("=" * 60)
+print("File:", p.path)
+print("Event:", p.event)
+print("Samples:", p.samples)
+print("Duration:", str(round(p.duration, 1)) + "s")
+print()
+
+print("Top 10 Methods (self time):")
+for i, m in enumerate(p.hot(10)):
+    pct = rjust(str(round(m.self_pct, 1)) + "%", 7)
+    print(str(i+1) + ". " + pct + "  " + m.name)
+
+print()
+print("Top 5 Threads:")
+for t in p.threads(5):
+    pct = rjust(str(round(t.pct, 1)) + "%", 7)
+    print("  " + pct + "  " + t.name)
+```
+
+## Starlark Language Notes
+
+### String Formatting
+
+```python
+# Basic interpolation
+name = "World"
+print("Hello " + name)
+
+# % formatting (no width/precision)
+print("Value: %d" % 42)
+print("Name: %s, Count: %d" % (name, 10))
+
+# Use ljust/rjust for alignment, round() for precision
+print(rjust(str(round(3.14159, 2)), 8))  # "    3.14"
+```
+
+### Loops
+
+```python
+# For loop
+for m in p.hot(5):
+    print(m.name)
+
+# While loop
+i = 0
+while i < 10:
+    print(i)
+    i += 1
+
+# Range
+for i in range(10):
+    print(i)
+
+# Enumerate
+for i, m in enumerate(p.hot(5)):
+    print(str(i+1) + ". " + m.name)
+```
+
+### Conditionals
+
+```python
+if p.samples > 1000:
+    print("Large profile")
+elif p.samples > 100:
+    print("Medium profile")
+else:
+    print("Small profile")
+```
+
+### Dictionaries
+
+```python
+counts = {}
+for s in p.stacks:
+    key = s.thread
+    counts[key] = counts.get(key, 0) + s.samples
+
+for name, count in counts.items():
+    print(name, count)
+
+# Check key
+if "worker-1" in counts:
+    print(counts["worker-1"])
+```
+
+### Lists
+
+```python
+items = [1, 2, 3, 4, 5]
+print(len(items))
+print(items[0])   # 1
+print(items[-1])  # 5
+print(items[1:3]) # [2, 3]
+
+# Append
+items.append(6)
+
+# Sort
+sorted_items = sorted(items)
+
+# Reverse
+for i in reversed(items):
+    print(i)
+```
+
+### Lambdas
+
+```python
+# Filter
+workers = p.filter(lambda s: "worker" in s.thread)
+
+# Group by
+groups = p.group_by(lambda s: s.thread.split("-")[0] if s.thread else None)
+
+# Sorted with key
+sorted_methods = sorted(methods, key=lambda m: m.samples, reverse=True)
+```
+
+### No Try/Except
+
+Starlark has no exception handling. Validate inputs explicitly:
+
+```python
+if len(ARGS) == 0:
+    fail("Usage: script.star <profile>")
+
+path = ARGS[0]
+p = open(path)  # Error exits script automatically
+```
+
+## Performance Tips
+
+<Tip>
+**Timeline caching**: Calling `timeline()` on a profile the first time parses timestamps. Subsequent calls on the same profile (or filtered variants) reuse cached data.
+</Tip>
+
+<Tip>
+**Filter then timeline**: Filter first, then timeline to avoid parsing timestamps for stacks you'll discard.
+</Tip>
+
+<Tip>
+**Timeout for long scripts**: Use `--timeout 5m` for scripts analyzing large files.
+</Tip>
+
+## Limitations
+
+<Warning>
+**No I/O**: Starlark scripts cannot read/write files directly (except via `open()` for profiles). All output must go to stdout.
+</Warning>
+
+<Warning>
+**No imports**: You cannot import other scripts or modules. Keep logic self-contained or use helper functions within the same file.
+</Warning>
+
+<Warning>
+**No network**: No HTTP, no sockets. Scripts are sandboxed for safety.
+</Warning>
+
+## See Also
+
+- [hot](/commands/hot) - Programmatically via `Profile.hot()`
+- [diff](/commands/diff) - Programmatically via `diff()`
+- [filter](/commands/filter) - Programmatically via `Profile.filter()`
+- [collapse](/commands/collapse) - Programmatically via `emit_all()`

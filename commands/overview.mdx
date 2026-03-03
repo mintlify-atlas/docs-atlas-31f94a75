@@ -1,0 +1,94 @@
+---
+title: Command Reference Overview
+description: Complete reference for all ap-query commands
+---
+
+`ap-query` provides a comprehensive set of commands for analyzing async-profiler recordings. Each command is designed for a specific analysis task, from quick triage to deep-dive investigation.
+
+## Analysis Commands
+
+<CardGroup cols={2}>
+  <Card title="info" icon="circle-info" href="/commands/info">
+    One-shot triage showing events, threads, hot methods, and automatic drill-down
+  </Card>
+  
+  <Card title="hot" icon="fire" href="/commands/hot">
+    Rank methods by self-time and total-time with dual-sorted tables
+  </Card>
+  
+  <Card title="tree" icon="diagram-project" href="/commands/tree">
+    Call tree descending from a method to show what it calls
+  </Card>
+  
+  <Card title="trace" icon="route" href="/commands/trace">
+    Hottest path from a method to leaf for finding critical paths
+  </Card>
+  
+  <Card title="callers" icon="arrow-turn-up" href="/commands/callers">
+    Callers tree ascending to a method to show who calls it
+  </Card>
+  
+  <Card title="threads" icon="layer-group" href="/commands/threads">
+    Thread sample distribution with optional grouping
+  </Card>
+  
+  <Card title="timeline" icon="clock" href="/commands/timeline">
+    Sample distribution over time (JFR only)
+  </Card>
+</CardGroup>
+
+## Command Quick Reference
+
+| Command | Purpose | Key Flags |
+|---------|---------|----------|
+| **info** | One-shot triage | `--expand`, `--top-threads`, `--top-methods` |
+| **hot** | Method hotspot ranking | `--top`, `--fqn`, `--assert-below` |
+| **tree** | Descending call tree | `-m/--method`, `--depth`, `--min-pct`, `--hide` |
+| **trace** | Hottest path to leaf | `-m/--method` (required), `--min-pct`, `--fqn`, `--hide` |
+| **callers** | Ascending caller tree | `-m/--method` (required), `--depth`, `--min-pct`, `--hide` |
+| **threads** | Thread distribution | `--top`, `--group` |
+| **timeline** | Time-based analysis | `--buckets`, `--resolution`, `--compare`, `-m/--method` |
+
+## Common Flags
+
+All analysis commands support these shared flags:
+
+- **`-e/--event`** - Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name (default: `cpu`)
+- **`-t/--thread`** - Filter to threads matching substring
+- **`--from`** - Start of time window (JFR only)
+- **`--to`** - End of time window (JFR only)
+- **`--no-idle`** - Remove idle leaf frames
+
+## Usage Pattern
+
+```bash
+ap-query <command> [flags] <file>
+```
+
+<Note>
+  `ap-query` auto-detects input format:
+  - `.jfr` / `.jfr.gz` → JFR binary (full features)
+  - `.pb.gz` / `.pprof` → pprof protobuf (no timeline)
+  - Other files → collapsed-stack text
+  - `-` (stdin) → auto-detect
+</Note>
+
+## Input Format Support
+
+| Format | Extensions | Supported Commands |
+|--------|-----------|--------------------|
+| **JFR** | `.jfr`, `.jfr.gz` | All commands |
+| **pprof** | `.pb.gz`, `.pb`, `.pprof` | All except `timeline` |
+| **Collapsed** | Any other | All except `timeline` |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Getting Started" icon="rocket" href="/getting-started">
+    Learn the basics of using ap-query
+  </Card>
+  
+  <Card title="Common Workflows" icon="diagram-next" href="/workflows">
+    See practical analysis examples
+  </Card>
+</CardGroup>

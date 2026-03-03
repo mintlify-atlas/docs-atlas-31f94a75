@@ -1,0 +1,420 @@
+---
+title: 'Profile'
+description: 'Profile type and methods for analyzing profiling data'
+---
+
+## Overview
+
+A `Profile` represents a loaded profile scoped to a single event type (cpu, wall, alloc, lock). Create profiles with the [`open()`](/api/functions#open) function.
+
+```python
+p = open("profile.jfr")
+print(p.samples)  # Total sample count
+print(p.event)    # "cpu"
+```
+
+## Properties
+
+<ResponseField name="stacks" type="list[Stack]">
+  List of all stacks in the profile. Each stack represents one unique call path.
+  
+  ```python
+  for s in p.stacks:
+      if s.has("HashMap"):
+          print(s.leaf.name)
+  ```
+</ResponseField>
+
+<ResponseField name="samples" type="int">
+  Total sample count across all stacks.
+  
+  ```python
+  print(p.samples)  # 1523
+  ```
+</ResponseField>
+
+<ResponseField name="duration" type="float">
+  Recording duration in seconds. Returns `0` for formats without duration metadata (collapsed text, some pprof producers).
+  
+  ```python
+  print(p.duration)  # 60.5
+  ```
+</ResponseField>
+
+<ResponseField name="start" type="float">
+  Start time in seconds from recording start. For root profiles this is `0`. For windowed profiles (from `open()` with `start=` or from `split()`), this is the window start offset.
+  
+  ```python
+  p = open("profile.jfr", start="5s", end="10s")
+  print(p.start)  # 5.0
+  ```
+</ResponseField>
+
+<ResponseField name="end" type="float">
+  End time in seconds from recording start. For root profiles equals `duration`. For windowed profiles, this is the window end offset.
+  
+  ```python
+  p = open("profile.jfr", start="5s", end="10s")
+  print(p.end)  # 10.0
+  ```
+</ResponseField>
+
+<ResponseField name="event" type="string">
+  Selected event type: `"cpu"`, `"wall"`, `"alloc"`, or `"lock"`.
+  
+  ```python
+  p = open("profile.jfr", event="wall")
+  print(p.event)  # "wall"
+  ```
+</ResponseField>
+
+<ResponseField name="events" type="list[string]">
+  All event types available in the source file. JFR files may contain multiple event types.
+  
+  ```python
+  p = open("multi.jfr")
+  for e in p.events:
+      print(e)  # cpu, wall, alloc, lock
+  ```
+</ResponseField>
+
+<ResponseField name="path" type="string">
+  Path to the source file.
+  
+  ```python
+  print(p.path)  # "profile.jfr"
+  ```
+</ResponseField>
+
+## Methods
+
+### hot()
+
+Return top methods by self time or total time.
+
+```python
+hot(n=all, fqn=False, sort="self") → list[Method]
+```
+
+<ParamField path="n" type="int" default="all">
+  Limit results to top N methods. `0` or omitted returns all methods.
+</ParamField>
+
+<ParamField path="fqn" type="bool" default="False">
+  Use fully-qualified names (e.g. `java.util.HashMap.resize`) instead of short names (`HashMap.resize`). Changes aggregation granularity.
+</ParamField>
+
+<ParamField path="sort" type="string" default="self">
+  Sort by `"self"` (leaf time) or `"total"` (inclusive time including callees).
+</ParamField>
+
+**Returns:** List of `Method` objects with `name`, `fqn`, `self`, `self_pct`, `total`, `total_pct`.
+
+```python
+for m in p.hot(10):
+    print(rjust(round(m.self_pct, 1), 6) + "%  " + m.name)
+```
+
+```
+  23.5%  HashMap.resize
+  18.2%  ThreadPoolExecutor.runWorker
+  12.1%  String.indexOf
+```
+
+### threads()
+
+Return thread sample distribution.
+
+```python
+threads(n=all) → list[Thread]
+```
+
+<ParamField path="n" type="int" default="all">
+  Limit to top N threads by sample count.
+</ParamField>
+
+**Returns:** List of `Thread` objects with `name`, `samples`, `pct`.
+
+```python
+for th in p.threads(5):
+    print(ljust(th.name, 30) + rjust(str(th.samples), 8))
+```
+
+```
+worker-pool-1              452
+worker-pool-2              387
+main                       201
+```
+
+### filter()
+
+Return a new profile containing only stacks matching a predicate.
+
+```python
+filter(fn) → Profile
+```
+
+<ParamField path="fn" type="function(Stack) → bool" required>
+  Predicate function. Stacks where `fn(stack)` returns `True` are kept.
+</ParamField>
+
+**Returns:** New `Profile` with filtered stacks. Original profile is unchanged.
+
+```python
+# Keep only stacks containing HashMap
+filtered = p.filter(lambda s: s.has("HashMap"))
+print(filtered.samples)  # Subset of p.samples
+
+# Filter by thread
+workers = p.filter(lambda s: s.thread_has("worker"))
+
+# Chain filters
+result = p.filter(lambda s: s.has("Server")).filter(lambda s: s.depth > 5)
+```
+
+### group_by()
+
+Partition profile into groups by a key function.
+
+```python
+group_by(fn) → dict[string, Profile]
+```
+
+<ParamField path="fn" type="function(Stack) → string | None" required>
+  Key function. Stacks returning the same key are grouped together. `None` excludes the stack.
+</ParamField>
+
+**Returns:** Dictionary mapping keys to `Profile` objects.
+
+```python
+# Group by thread pool (extract prefix before dash)
+groups = p.group_by(lambda s: s.thread.split("-")[0] if s.thread else None)
+for name in sorted(groups.keys()):
+    print(name + ": " + str(groups[name].samples))
+```
+
+```
+worker: 823
+io: 412
+scheduler: 288
+```
+
+### timeline()
+
+Divide profile into time buckets. **JFR only** - requires per-sample timestamps.
+
+```python
+timeline(resolution=None, buckets=None) → list[Bucket]
+```
+
+<ParamField path="resolution" type="string | int | float">
+  Bucket width. Accepts duration strings (`"1s"`, `"500ms"`), or numeric seconds. Numeric values require keyword form: `timeline(resolution=30)`.
+</ParamField>
+
+<ParamField path="buckets" type="int">
+  Target number of buckets. Overrides resolution if specified.
+</ParamField>
+
+**Returns:** List of `Bucket` objects with `start`, `end`, `samples`, `label`, `stacks`, `profile`.
+
+<Info>
+  First call to `timeline()` triggers a full re-parse of the JFR file with timestamps enabled. This is expensive for large files. Subsequent calls reuse cached data.
+</Info>
+
+```python
+# 1-second buckets
+buckets = p.timeline(resolution="1s")
+for b in buckets:
+    print(b.label + ": " + str(b.samples))
+```
+
+```
+0.0s-1.0s: 142
+1.0s-2.0s: 138
+2.0s-3.0s: 151
+```
+
+```python
+# 10 equal-width buckets
+buckets = p.timeline(buckets=10)
+```
+
+### split()
+
+Split profile at time boundaries. **JFR only**.
+
+```python
+split(times) → list[Profile]
+```
+
+<ParamField path="times" type="list[float | string]" required>
+  Split points in seconds (floats) or duration strings (`"5s"`, `"1m30s"`). Must be strictly increasing and within profile duration. Times are **relative to the profile's scope**, not recording start.
+</ParamField>
+
+**Returns:** `len(times) + 1` profiles representing `[0, t1)`, `[t1, t2)`, ..., `[tn, end)`.
+
+```python
+# Split at 5s and 10s → 3 profiles
+parts = p.split([5.0, 10.0])
+for i, part in enumerate(parts):
+    print("Part " + str(i) + ": " + str(part.start) + "s-" + str(part.end) + "s")
+```
+
+```
+Part 0: 0.0s-5.0s
+Part 1: 5.0s-10.0s
+Part 2: 10.0s-60.0s
+```
+
+```python
+# Mix floats and duration strings
+parts = p.split(["5s", 10.5, "30s"])
+
+# Split a windowed profile - times are relative to window start
+windowed = open("profile.jfr", start="10s", end="20s")
+parts = windowed.split([5.0])  # Splits at absolute 15s
+print(parts[0].start)  # 10.0
+print(parts[1].start)  # 15.0
+```
+
+### tree()
+
+Generate a call tree from a method.
+
+```python
+tree(method="", depth=4, min_pct=1.0) → string
+```
+
+<ParamField path="method" type="string" default="">
+  Root method name (substring match). Empty string starts from profile root.
+</ParamField>
+
+<ParamField path="depth" type="int" default="4">
+  Maximum tree depth.
+</ParamField>
+
+<ParamField path="min_pct" type="float" default="1.0">
+  Minimum percentage threshold to include branches.
+</ParamField>
+
+```python
+print(p.tree("HashMap.get", depth=3))
+```
+
+### trace()
+
+Find the hottest path from a method.
+
+```python
+trace(method, min_pct=0.5, fqn=False) → string
+```
+
+<ParamField path="method" type="string" required>
+  Starting method name (substring match).
+</ParamField>
+
+<ParamField path="min_pct" type="float" default="0.5">
+  Minimum percentage threshold for path segments.
+</ParamField>
+
+<ParamField path="fqn" type="bool" default="False">
+  Use fully-qualified names.
+</ParamField>
+
+```python
+print(p.trace("HashMap.resize"))
+```
+
+### callers()
+
+Show callers of a method as a tree.
+
+```python
+callers(method, depth=4, min_pct=1.0) → string
+```
+
+<ParamField path="method" type="string" required>
+  Target method name (substring match).
+</ParamField>
+
+<ParamField path="depth" type="int" default="4">
+  Maximum tree depth toward root.
+</ParamField>
+
+<ParamField path="min_pct" type="float" default="1.0">
+  Minimum percentage threshold.
+</ParamField>
+
+```python
+print(p.callers("HashMap.resize"))
+```
+
+### no_idle()
+
+Remove idle leaf frames (same as CLI `--no-idle`).
+
+```python
+no_idle() → Profile
+```
+
+**Returns:** New profile with idle frames removed.
+
+```python
+active = p.no_idle()
+```
+
+### summary()
+
+Generate a one-line summary string.
+
+```python
+summary() → string
+```
+
+**Returns:** Format: `"event: N samples, Xs, M stacks"`.
+
+```python
+print(p.summary())
+# cpu: 1523 samples, 60.5s, 847 stacks
+```
+
+## Examples
+
+### Compare time windows
+
+```python
+p = open("profile.jfr")
+parts = p.split([p.duration / 2])
+d = diff(parts[0], parts[1])
+for e in d.regressions:
+    print(e.name + " +" + str(round(e.delta, 1)) + "%")
+```
+
+### Find callers of a leaf method
+
+```python
+p = open("profile.jfr")
+callers = {}
+for s in p.stacks:
+    if s.leaf and s.leaf.name == "__sched_yield":
+        below = s.below("__sched_yield")
+        if len(below) > 0:
+            c = below[-1].name  # Direct caller
+            callers[c] = callers.get(c, 0) + s.samples
+
+for name, count in sorted(callers.items(), key=lambda x: x[1], reverse=True):
+    print(str(count) + "  " + name)
+```
+
+### CI budget check
+
+```python
+p = open("profile.jfr")
+gc = p.filter(lambda s: s.has("GC") or s.has("FullGC"))
+gc_pct = 100.0 * gc.samples / p.samples
+
+if gc_pct > 15.0:
+    fail("GC overhead exceeds budget: " + str(round(gc_pct, 1)) + "%")
+
+print("GC: " + str(round(gc_pct, 1)) + "% ✓")
+```

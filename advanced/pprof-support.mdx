@@ -1,0 +1,278 @@
+---
+title: pprof Format Support
+description: Using Go pprof and other pprof-compatible profiles with ap-query
+---
+
+## Overview
+
+ap-query supports the pprof protobuf format (`.pb.gz`, `.pb`, `.pprof`, `.pprof.gz`) used by:
+- **Go runtime profiler** (`runtime/pprof`)
+- **pprof-rs** (Rust profiler)
+- **py-spy** (Python profiler with `--format speedscope` converted to pprof)
+- **OpenTelemetry (OTel)** profiling signals
+- **gperftools** (C++ profiler)
+
+While pprof lacks some JFR-specific features, ap-query provides cross-format analysis so you can use the same commands on both JFR and pprof profiles.
+
+## Supported Commands
+
+All major ap-query commands work with pprof:
+
+✅ Supported:
+- `hot` — Hot methods
+- `tree` — Call tree
+- `trace` — Hottest path
+- `callers` — Caller analysis
+- `lines` — Line-level breakdown
+- `diff` — Compare two profiles (pprof vs pprof, or pprof vs JFR)
+- `filter` — Filter stacks
+- `collapse` — Export to collapsed format
+- `events` — List available events
+- `info` — Profile summary
+- `script` — Starlark scripting
+- `threads` — Thread distribution (when thread labels exist)
+
+❌ Not supported:
+- `timeline` — pprof lacks per-sample timestamps
+- `--from` / `--to` — Time-range filtering requires timestamps
+
+Attempting to use `timeline` or `--from`/`--to` with pprof will produce a clear error message.
+
+## SampleType Mapping to Events
+
+Pprof profiles contain multiple `SampleType` entries (e.g., `cpu/nanoseconds`, `samples/count`). ap-query automatically maps these to canonical event types:
+
+### CPU Events
+| pprof SampleType | ap-query Event | Priority |
+|------------------|----------------|----------|
+| `cpu/nanoseconds` | `cpu` | 2 (higher) |
+| `samples/count` | `cpu` | 1 (lower) |
+
+### Wall-Clock Events
+| pprof SampleType | ap-query Event | Priority |
+|------------------|----------------|----------|
+| `wall/nanoseconds` | `wall` | 2 |
+
+### Allocation Events
+| pprof SampleType | ap-query Event | Priority |
+|------------------|----------------|----------|
+| `alloc_space/bytes` | `alloc` | 2 (higher) |
+| `alloc_objects/count` | `alloc` | 1 (lower) |
+| `inuse_space/bytes` | `alloc` | 2 |
+| `inuse_objects/count` | `alloc` | 1 |
+
+### Lock Contention Events
+| pprof SampleType | ap-query Event | Priority |
+|------------------|----------------|----------|
+| `delay/nanoseconds` | `lock` | 2 (higher) |
+| `contentions/count` | `lock` | 1 (lower) |
+
+### Priority Resolution
+
+When a pprof profile contains multiple SampleTypes mapping to the same event (e.g., both `cpu/nanoseconds` and `samples/count`), ap-query selects the highest-priority (most accurate) value:
+
+```go
+// From pprof.go:classifyPprofSampleType
+case typ == "cpu" && unit == "nanoseconds":
+    return "cpu", 2  // Higher fidelity
+case typ == "samples" && unit == "count":
+    return "cpu", 1  // Lower fidelity (fallback)
+```
+
+This ensures that when both count and duration are available, ap-query uses the duration-based measurement for more accurate weighting.
+
+## Feature Limitations vs JFR
+
+### No Timeline Support
+
+Pprof profiles aggregate samples without per-sample timestamps. You cannot:
+- Use `ap-query timeline` to visualize sample distribution over time
+- Use `--from` / `--to` to zoom into time windows
+- Compare time windows within a single profile using `diff --from/--to --vs-from/--vs-to`
+
+If you need timeline analysis, use JFR format instead.
+
+### No Per-Sample Timestamps
+
+The `timedEvents` field in `parsedProfile` is always `nil` for pprof:
+
+```go
+// From pprof.go:buildParsedProfile
+return &parsedProfile{
+    eventCounts:   eventCounts,
+    stacksByEvent: stacksByEvent,
+    timedEvents:   nil, // pprof has no per-sample timestamps
+    spanNanos:     spanNanos,
+}, nil
+```
+
+Commands that require per-sample data (timeline, time-range filtering) will fail gracefully with an error message.
+
+### Thread Information
+
+Thread support depends on whether the pprof profile includes thread labels:
+- **Go profiles**: Often include `thread` or `thread_id` labels
+- **pprof-rs**: May include thread labels depending on configuration
+- **py-spy**: Thread information varies by format
+
+ap-query extracts thread info from pprof labels when available:
+
+```go
+// From pprof.go:extractPprofThread
+for k, v := range sample.Label {
+    if k == "thread" && len(v) > 0 {
+        return v[0]
+    }
+}
+for k, v := range sample.NumLabel {
+    if k == "thread_id" && len(v) > 0 {
+        return fmt.Sprintf("thread-%d", v[0])
+    }
+}
+return ""  // No thread info
+```
+
+If no thread labels exist, all samples are treated as coming from an unknown thread.
+
+## Supported pprof Sources
+
+### Go Runtime Profiler
+
+```go
+import "runtime/pprof"
+
+f, _ := os.Create("cpu.pprof")
+pprof.StartCPUProfile(f)
+defer pprof.StopCPUProfile()
+
+// ... application code ...
+```
+
+Then analyze with ap-query:
+```bash
+ap-query hot cpu.pprof --top 20
+ap-query tree cpu.pprof -m myFunction --depth 6
+```
+
+### pprof-rs (Rust)
+
+Record Rust profiles using [pprof-rs](https://github.com/tikv/pprof-rs):
+
+```rust
+let guard = pprof::ProfilerGuardBuilder::default()
+    .frequency(1000)
+    .blocklist(&["libc", "libpthread"])
+    .build()
+    .unwrap();
+
+// ... application code ...
+
+if let Ok(report) = guard.report().build() {
+    let file = File::create("profile.pb").unwrap();
+    report.pprof().unwrap().write_to_writer(&mut file).unwrap();
+}
+```
+
+Analyze with ap-query:
+```bash
+ap-query hot profile.pb
+ap-query diff before.pb after.pb --min-delta 0.5
+```
+
+### py-spy (Python)
+
+Record Python profiles with [py-spy](https://github.com/benfred/py-spy):
+
+```bash
+py-spy record -o profile.speedscope -f speedscope -- python app.py
+# Convert to pprof using speedscope or other tools
+```
+
+<Note>
+py-spy doesn't natively output pprof format. You may need conversion tools or use collapsed format instead.
+</Note>
+
+### OpenTelemetry (OTel)
+
+OTel profiling signals can be exported in pprof format. Consult your OTel collector configuration for details.
+
+## Real Examples
+
+### Go HTTP Server CPU Profile
+
+```bash
+# Record Go CPU profile
+curl http://localhost:6060/debug/pprof/profile?seconds=30 > cpu.pb.gz
+
+# Analyze hot methods
+ap-query hot cpu.pb.gz --top 20
+
+# Find why ServeHTTP is expensive
+ap-query tree cpu.pb.gz -m ServeHTTP --depth 6
+```
+
+### Comparing Two Go Profiles
+
+```bash
+# Before optimization
+curl http://localhost:6060/debug/pprof/profile?seconds=30 > before.pb.gz
+
+# Deploy changes
+
+# After optimization
+curl http://localhost:6060/debug/pprof/profile?seconds=30 > after.pb.gz
+
+# Compare
+ap-query diff before.pb.gz after.pb.gz --min-delta 1.0
+```
+
+### Cross-Format Diff (JFR vs pprof)
+
+```bash
+# Java service (JFR)
+asprof -d 30 -o jfr -f java-service.jfr <pid>
+
+# Go service (pprof)
+curl http://localhost:6060/debug/pprof/profile?seconds=30 > go-service.pb.gz
+
+# Compare (works even with different formats!)
+ap-query diff java-service.jfr go-service.pb.gz
+```
+
+## Event Type Auto-Detection
+
+When you don't specify `--event`, ap-query automatically selects the best available event:
+
+1. If only one event type exists, use it
+2. If multiple events exist and `cpu` is present, use `cpu` (default)
+3. Otherwise, use the first available event type
+
+You can explicitly request an event:
+```bash
+ap-query hot profile.pb.gz --event alloc
+```
+
+If the requested event doesn't exist, you'll get a clear error:
+```
+error: event "wall" not found (available: cpu, alloc)
+```
+
+## Format Detection
+
+ap-query auto-detects pprof format based on file extensions:
+
+- `.pb.gz` — gzip-compressed pprof protobuf
+- `.pb` — raw pprof protobuf
+- `.pprof` — pprof protobuf (either raw or gzipped)
+- `.pprof.gz` — gzip-compressed pprof protobuf
+
+For stdin (`-`), ap-query detects binary content and attempts pprof parsing first, falling back to collapsed text if pprof parsing fails.
+
+## Performance Considerations
+
+Pprof profiles are parsed using the official [google/pprof](https://github.com/google/pprof) library, which handles gzip decompression automatically. Large profiles (>100MB compressed) may take a few seconds to parse, but once loaded, analysis is fast.
+
+For very large profiles, consider:
+- Using `--thread` to filter to specific threads
+- Using `diff` to compare incremental changes rather than analyzing full profiles
+- Converting to collapsed format once and reusing: `ap-query collapse profile.pb.gz > profile.collapsed`

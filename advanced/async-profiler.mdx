@@ -1,0 +1,133 @@
+---
+title: async-profiler Integration
+description: Using async-profiler to record JFR profiles for ap-query analysis
+---
+
+## What is async-profiler?
+
+async-profiler is a low-overhead sampling profiler for Java that collects stack traces and produces profiling data in multiple output formats. It uses native code and OS-level APIs to capture accurate performance data without the overhead of traditional JVMTI-based profilers.
+
+Key features:
+- Low overhead (typically &lt;1% CPU)
+- Captures both Java and native frames
+- Supports multiple event types: CPU, wall-clock, allocations, and lock contention
+- Works without instrumenting bytecode
+- Outputs JFR (Java Flight Recorder) format with full metadata
+
+## Recording Profiles
+
+Use `asprof` to record profiles. The `-o jfr` output format is recommended for ap-query because it preserves:
+- Event types (cpu/wall/alloc/lock)
+- Per-sample timestamps (required for timeline and `--from`/`--to`)
+- Line numbers and thread information
+- Hardware counter events
+
+### Common Profiling Commands
+
+**CPU profiling** (on-CPU time only):
+```bash
+asprof -d 30 -o jfr -f profile.jfr <pid>
+```
+
+**Wall-clock profiling** (includes I/O, locks, sleeps):
+```bash
+asprof -d 30 -e wall -o jfr -f profile.jfr <pid>
+```
+
+**Allocation profiling**:
+```bash
+asprof -d 30 -e alloc -o jfr -f profile.jfr <pid>
+```
+
+**Lock contention profiling**:
+```bash
+asprof -d 30 -e lock -o jfr -f profile.jfr <pid>
+```
+
+### Recording Options
+
+- **`-d DURATION`** — Recording duration in seconds (default: until manually stopped)
+- **`-e EVENT`** — Event type to profile:
+  - `cpu` — CPU cycles (default)
+  - `wall` — Wall-clock time
+  - `alloc` — Object allocations
+  - `lock` — Lock contention
+  - Hardware counters: `branch-misses`, `cache-misses`, `cycles`, etc.
+- **`-o FORMAT`** — Output format (`jfr` recommended for ap-query)
+- **`-f FILE`** — Output file path
+- **`--cstack MODE`** — Native stack capture mode (fp, dwarf, lbr)
+- **`-i INTERVAL`** — Sampling interval in nanoseconds
+
+### Hardware Counter Events
+
+Async-profiler can record hardware performance counters beyond the standard CPU/wall/alloc/lock events. When you record with a hardware event (e.g., `asprof -e branch-misses`), ap-query automatically discovers and uses that event name from the JFR metadata.
+
+ap-query supports:
+- `branch-misses`
+- `cache-misses`
+- `cycles`
+- `instructions`
+- Any other event supported by async-profiler and your CPU
+
+These events are auto-detected from the `jdk.ActiveSetting` metadata and normalized (e.g., `cpu-clock` becomes `cpu`).
+
+## Integration with ap-query
+
+Once you've recorded a JFR profile with async-profiler, ap-query provides full-featured analysis:
+
+1. **Automatic event detection**: ap-query reads event metadata from JFR and auto-selects the appropriate event type
+2. **Timeline analysis**: Per-sample timestamps enable `timeline` command and `--from`/`--to` windowing
+3. **Multi-event support**: Single JFR files can contain multiple event types (cpu, wall, alloc, lock)
+4. **Thread information**: Thread names and IDs are preserved from JFR metadata
+5. **Line numbers**: Source line numbers are available for `lines` command
+
+### Example Workflow
+
+```bash
+# 1. Record a 30-second CPU profile
+asprof -d 30 -o jfr -f app.jfr <pid>
+
+# 2. Quick triage
+ap-query info app.jfr
+
+# 3. Find hotspots
+ap-query hot app.jfr --top 20
+
+# 4. Drill into suspicious method
+ap-query tree app.jfr -m HashMap.resize --depth 6
+
+# 5. View timeline to find spikes
+ap-query timeline app.jfr
+
+# 6. Zoom into spike window
+ap-query hot app.jfr --from 12s --to 14s
+```
+
+## Why JFR over Collapsed Text?
+
+While ap-query accepts collapsed-stack text format (`asprof -o collapsed`), JFR is strongly preferred:
+
+| Feature | JFR | Collapsed Text |
+|---------|-----|----------------|
+| Event types | Preserved (cpu/wall/alloc/lock) | Lost (all merged) |
+| Timeline | Full per-sample timestamps | No timestamps |
+| `--from`/`--to` | Supported | Not supported |
+| Line numbers | Preserved | Depends on `-l` flag |
+| Thread info | Preserved | Optional (`-t`) |
+| Multi-event | Single file | Separate files needed |
+
+If you have collapsed text and need deeper analysis, re-profile with `asprof -o jfr`.
+
+## Getting async-profiler
+
+Download the latest release from:
+[https://github.com/async-profiler/async-profiler/releases](https://github.com/async-profiler/async-profiler/releases)
+
+Extract and use the `asprof` script:
+```bash
+wget https://github.com/async-profiler/async-profiler/releases/download/v3.0/async-profiler-3.0-linux-x64.tar.gz
+tar xzf async-profiler-3.0-linux-x64.tar.gz
+./async-profiler-3.0-linux-x64/bin/asprof --version
+```
+
+Refer to the [async-profiler documentation](https://github.com/async-profiler/async-profiler) for platform-specific installation and usage details.

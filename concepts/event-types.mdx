@@ -1,0 +1,389 @@
+---
+title: Event Types
+description: Understanding cpu, wall, alloc, lock, and hardware counter event types
+---
+
+ap-query supports multiple event types for different profiling scenarios. Each event type captures different aspects of your application's behavior.
+
+## Core Event Types
+
+ap-query recognizes four core event types plus hardware counters:
+
+### cpu (default)
+
+Captures **on-CPU samples** — where your application burns CPU cycles.
+
+**When to use cpu:**
+- Identifying compute-intensive code
+- Optimizing algorithms and hot loops
+- Default choice when CPU usage is high
+- When you want to reduce CPU consumption
+
+**What it shows:**
+- Methods actively executing on CPU cores
+- Excludes threads waiting on I/O, locks, or sleep
+- Shows computational bottlenecks
+
+```bash
+# Explicitly specify cpu event (though it's the default)
+ap-query hot profile.jfr --event cpu
+
+# CPU profiling during recording
+asprof -d 30 -o jfr -f profile.jfr <pid>
+```
+
+<Note>
+CPU is the default event type. If you don't specify `--event`, ap-query uses cpu when available.
+</Note>
+
+### wall
+
+Captures **wall-clock samples** — all threads at regular intervals, including blocked threads.
+
+**When to use wall:**
+- Application has low CPU but high latency
+- Investigating slow requests where threads wait on I/O
+- Understanding total time (compute + waiting)
+- Threads blocked on database, network, or locks
+
+**What it shows:**
+- Everything cpu shows PLUS waiting time
+- Threads in sleep, park, futex, epoll_wait
+- True total time spent in methods
+
+```bash
+# Wall-clock profiling
+ap-query hot profile.jfr --event wall
+
+# Record wall-clock samples
+asprof -d 30 -e wall -o jfr -f profile.jfr <pid>
+
+# Remove idle frames to focus on active work between waits
+ap-query hot profile.jfr --event wall --no-idle
+```
+
+<Tabs>
+  <Tab title="CPU vs WALL">
+    **CPU:** On-CPU time only (computational work)  
+    **WALL:** Total elapsed time (compute + waiting)
+
+    If CPU shows 5% and WALL shows 60%, your threads are blocked 55% of the time.
+
+    Use `info` to compare both when available:
+    ```bash
+    ap-query info profile.jfr  # Shows CPU vs WALL comparison
+    ```
+
+    When wall profiles show >50% idle leaf frames, use `--no-idle`:
+    ```bash
+    ap-query hot profile.jfr --event wall --no-idle
+    ```
+
+    The `--no-idle` flag removes frames like:
+    - `futex` (lock waiting)
+    - `sleep` / `park` (explicit delays)
+    - `epoll_wait` (network I/O)
+  </Tab>
+  <Tab title="Timeline Comparison">
+    Compare CPU vs WALL over time to see efficiency changes:
+
+    ```bash
+    # Shows CPU count, WALL count, and CPU/WALL ratio per bucket
+    ap-query timeline profile.jfr --compare cpu,wall
+
+    # Focus on specific thread group
+    ap-query timeline profile.jfr --compare cpu,wall -t "http-nio"
+    ```
+
+    A low CPU/WALL ratio indicates heavy waiting. A ratio near 1.0 means mostly active compute.
+  </Tab>
+</Tabs>
+
+### alloc
+
+Captures **allocation samples** — where your application allocates memory.
+
+**When to use alloc:**
+- High GC overhead or long GC pauses
+- Memory consumption issues
+- Identifying allocation-heavy code paths
+- Optimizing object creation
+
+**What it shows:**
+- Methods allocating objects (both TLAB and non-TLAB)
+- Allocation hotspots causing GC pressure
+- Which types are being allocated
+
+```bash
+# Allocation profiling
+ap-query hot profile.jfr --event alloc
+
+# Record allocation samples
+asprof -d 30 -e alloc -o jfr -f profile.jfr <pid>
+```
+
+### lock
+
+Captures **lock contention samples** — where threads block waiting for locks.
+
+**When to use lock:**
+- High thread contention
+- Scalability issues under load
+- Threads spending time in `BLOCKED` state
+- Synchronization bottlenecks
+
+**What it shows:**
+- Monitor enter events (Java synchronized blocks/methods)
+- Which locks have high contention
+- Call stacks waiting to acquire locks
+
+```bash
+# Lock contention profiling
+ap-query hot profile.jfr --event lock
+
+# Record lock contention samples  
+asprof -d 30 -e lock -o jfr -f profile.jfr <pid>
+```
+
+## Hardware Counters
+
+Beyond the four core event types, async-profiler supports hardware performance counters:
+
+- `branch-misses` — CPU branch prediction failures
+- `cache-misses` — CPU cache misses
+- `cycles` — CPU cycle count
+- `instructions` — Instructions executed
+- Other PMU events supported by Linux perf
+
+**When to use hardware counters:**
+- Low-level CPU optimization
+- Cache optimization for hot loops
+- Understanding microarchitecture behavior
+
+```bash
+# Record branch-misses event
+asprof -d 30 -e branch-misses -o jfr -f profile.jfr <pid>
+
+# Analyze branch-misses event
+ap-query hot profile.jfr --event branch-misses
+```
+
+<Info>
+Hardware counters require Linux perf support and appropriate kernel capabilities. They're auto-detected from JFR metadata when present.
+</Info>
+
+## Event Selection Logic
+
+ap-query automatically selects the appropriate event type based on what's available in your profile.
+
+### Explicit Selection
+
+When you specify `--event`, ap-query uses that event:
+
+```bash
+ap-query hot profile.jfr --event wall
+```
+
+Output:
+```
+Event: wall (from --event)
+```
+
+### Automatic Selection
+
+When you don't specify `--event`, ap-query follows this logic:
+
+<Accordion title="Single Available Event">
+  If the profile contains only one event type, ap-query uses it:
+
+  ```bash
+  ap-query hot wall-only.jfr
+  ```
+
+  Output:
+  ```
+  Event: wall (only available)
+  ```
+</Accordion>
+
+<Accordion title="Default Present">
+  If the profile contains multiple events and one is `cpu`, ap-query defaults to cpu:
+
+  ```bash
+  ap-query hot profile.jfr  # Contains cpu, wall, alloc
+  ```
+
+  Output:
+  ```
+  Event: cpu (default present)
+  Also available: wall (1234 samples), alloc (567 samples)
+  ```
+</Accordion>
+
+<Accordion title="Fallback to Dominant">
+  If cpu is not available but other events are, ap-query picks the event with the most samples:
+
+  ```bash
+  ap-query hot wall-alloc.jfr  # Contains wall, alloc (no cpu)
+  ```
+
+  Output:
+  ```
+  Event: wall (dominant fallback)
+  Also available: alloc (234 samples)
+  ```
+</Accordion>
+
+### Source Code Reference
+
+The event selection logic is implemented in `event_select.go:43-65`:
+
+```go
+func resolveEventType(requested string, explicit bool, counts map[string]int) (selected string, reason eventSelectionReason) {
+    if explicit {
+        return requested, eventReasonExplicit
+    }
+    if len(counts) == 0 {
+        return requested, eventReasonUnknown
+    }
+    if len(counts) == 1 {
+        best := dominantEvent(counts)
+        return best, eventReasonSingleAvailable
+    }
+    if counts[requested] > 0 {
+        return requested, eventReasonDefaultPresent
+    }
+    best := dominantEvent(counts)
+    return best, eventReasonFallbackDominant
+}
+```
+
+## Event Validation
+
+ap-query validates event types at runtime:
+
+### Known Event Types
+
+The four core events are always recognized (`event_select.go:10`):
+
+```go
+var validEventTypes = []string{"cpu", "wall", "alloc", "lock"}
+```
+
+### Dynamic Hardware Counters
+
+For JFR files, hardware counter names are discovered from `jdk.ActiveSetting` events:
+
+```go
+if typ == p.TypeMap.T_ACTIVE_SETTING {
+    s := p.ActiveSetting
+    if s.Name == "event" {
+        execEventName = normalizeExecEvent(s.Value)
+        // Dynamically add discovered event to available types
+    }
+}
+```
+
+This allows `ap-query` to work with any hardware counter recorded by async-profiler.
+
+### Error Cases
+
+<Warning>
+**Unknown event type:** When you specify an event that doesn't exist in the profile:
+
+```bash
+ap-query hot profile.jfr --event lock
+```
+
+Output:
+```
+error: event "lock" not found (available: cpu, wall, alloc)
+```
+</Warning>
+
+<Warning>
+**Collapsed text limitation:** Collapsed-stack format has no event type metadata:
+
+```bash
+ap-query hot stacks.txt --event wall
+```
+
+Output:
+```
+error: unknown event type "wall" (valid: cpu, wall, alloc, lock)
+```
+
+Collapsed text is event-agnostic. You must know which event type the collapsed stacks represent.
+</Warning>
+
+## pprof SampleType Mapping
+
+pprof profiles map their `SampleType` fields to ap-query events automatically (`pprof.go:42-68`):
+
+| pprof SampleType | ap-query Event | Priority |
+|------------------|----------------|----------|
+| `cpu/nanoseconds` | cpu | 2 (high) |
+| `samples/count` | cpu | 1 (low) |
+| `wall/nanoseconds` | wall | 2 (high) |
+| `alloc_objects/count` | alloc | 1 (low) |
+| `alloc_space/bytes` | alloc | 2 (high) |
+| `inuse_objects/count` | alloc | 1 (low) |
+| `inuse_space/bytes` | alloc | 2 (high) |
+| `contentions/count` | lock | 1 (low) |
+| `delay/nanoseconds` | lock | 2 (high) |
+
+When multiple SampleTypes map to the same event, the highest-priority wins. For example, if a pprof profile has both `alloc_objects/count` and `alloc_space/bytes`, ap-query uses `alloc_space/bytes` (priority 2) for the `alloc` event.
+
+## Best Practices
+
+### Start with CPU
+
+When unsure, start with cpu:
+```bash
+ap-query info profile.jfr
+ap-query hot profile.jfr  # Defaults to cpu
+```
+
+### Switch to WALL for Latency
+
+If CPU samples are low but your application is slow, switch to wall:
+```bash
+ap-query hot profile.jfr --event wall
+```
+
+### Use --no-idle with WALL
+
+Wall profiles often show >50% idle frames. Remove them to focus on active work:
+```bash
+ap-query hot profile.jfr --event wall --no-idle
+```
+
+ap-query automatically suggests `--no-idle` when appropriate (`main.go:266-279`):
+```go
+if eventType == "wall" && !opts.noIdle {
+    idleCount := 0
+    // ... count idle leaf frames ...
+    if float64(idleCount)/float64(sf.totalSamples) > 0.5 {
+        fmt.Fprintf(os.Stderr,
+            "Hint: %.0f%% of samples have idle leaf frames; consider --no-idle\n",
+            pctOf(idleCount, sf.totalSamples))
+    }
+}
+```
+
+### Use info for Multi-Event Profiles
+
+When a profile contains multiple event types, use `info` to compare them:
+```bash
+ap-query info profile.jfr  # Shows CPU vs WALL comparison when both exist
+```
+
+### Record the Right Event
+
+Match your profiling event to your investigation:
+
+- **CPU-bound workload** → `-e cpu` (default)
+- **I/O-bound workload** → `-e wall`  
+- **Memory issues** → `-e alloc`
+- **Contention issues** → `-e lock`
+- **Cache optimization** → `-e cache-misses` or `-e branch-misses`

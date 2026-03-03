@@ -1,0 +1,216 @@
+---
+title: diff
+description: Compare two profiles to detect regressions, improvements, and changes
+---
+
+## Overview
+
+The `diff` command compares two profiling files and categorizes changes as:
+- **REGRESSION**: Methods that increased in self time
+- **IMPROVEMENT**: Methods that decreased in self time
+- **NEW**: Methods present only in the second profile
+- **GONE**: Methods present only in the first profile
+
+## Usage
+
+```bash
+# Compare two separate files
+ap-query diff <before> <after> [flags]
+
+# Compare time windows within a single JFR file
+ap-query diff <file> --from DURATION --to DURATION --vs-from DURATION --vs-to DURATION [flags]
+```
+
+## Flags
+
+<ParamField path="--event" type="string" default="cpu">
+  Event type to analyze: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name
+</ParamField>
+
+<ParamField path="--thread" type="string">
+  Filter to threads matching this substring
+</ParamField>
+
+<ParamField path="--min-delta" type="float" default="0.5">
+  Hide entries with changes smaller than this percentage
+</ParamField>
+
+<ParamField path="--top" type="int" default="0">
+  Limit output rows per category (0 = unlimited)
+</ParamField>
+
+<ParamField path="--fqn" type="boolean" default="false">
+  Show fully-qualified names (includes package path)
+</ParamField>
+
+### Time Window Flags (JFR only)
+
+These flags enable comparing two time windows within a single JFR file:
+
+<ParamField path="--from" type="duration">
+  Start of first time window (e.g., "55s", "1m05s")
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of first time window
+</ParamField>
+
+<ParamField path="--vs-from" type="duration">
+  Start of second time window
+</ParamField>
+
+<ParamField path="--vs-to" type="duration">
+  End of second time window
+</ParamField>
+
+<Note>
+For single-file window diffs, you must specify at least one flag from `--from`/`--to` and at least one from `--vs-from`/`--vs-to`.
+</Note>
+
+## Examples
+
+### Compare Two Profile Files
+
+```bash
+ap-query diff before.jfr after.jfr
+```
+
+Output:
+```
+REGRESSION
+  HashMap.resize                                    12.3% ->  18.7%  (+6.4%)
+  String.concat                                      3.2% ->   8.1%  (+4.9%)
+
+IMPROVEMENT
+  ArrayList.grow                                    15.2% ->   9.1%  (-6.1%)
+  StringBuilder.append                               8.7% ->   5.3%  (-3.4%)
+
+NEW
+  Cache.compute                                     4.2%
+
+GONE
+  OldParser.parse                                   7.8%
+```
+
+### Filter Small Changes
+
+Show only changes greater than 5%:
+
+```bash
+ap-query diff before.jfr after.jfr --min-delta 5.0
+```
+
+### Compare Time Windows
+
+Compare early vs late period within the same recording:
+
+```bash
+ap-query diff recording.jfr --from 55s --to 1m05s --vs-from 2m45s --vs-to 3m10s
+```
+
+### Compare Specific Event Types
+
+```bash
+# Compare allocation profiles
+ap-query diff before.jfr after.jfr --event alloc
+
+# Compare wall-clock time
+ap-query diff before.jfr after.jfr --event wall
+```
+
+### Limit Output
+
+Show only top 10 entries per category:
+
+```bash
+ap-query diff before.jfr after.jfr --top 10
+```
+
+### Thread-Specific Diff
+
+Compare only worker threads:
+
+```bash
+ap-query diff before.jfr after.jfr --thread worker
+```
+
+## Output Format
+
+Each category shows:
+- Method name (short name by default, FQN with `--fqn`)
+- Before percentage
+- After percentage
+- Delta (change)
+
+If no significant changes are found above `--min-delta`, outputs:
+```
+no significant changes
+```
+
+## Use Cases
+
+### Performance Regression Detection
+
+Integrate into CI to catch performance regressions:
+
+```bash
+ap-query diff baseline.jfr pr-build.jfr --min-delta 3.0 --top 5
+if [ $? -eq 0 ] && grep -q REGRESSION; then
+  echo "Performance regression detected!"
+  exit 1
+fi
+```
+
+### Before/After Code Changes
+
+Measure impact of an optimization:
+
+```bash
+# Profile before optimization
+java -agentpath:/path/to/libasyncProfiler.so=start,event=cpu,file=before.jfr MyApp
+
+# Apply optimization, profile again
+java -agentpath:/path/to/libasyncProfiler.so=start,event=cpu,file=after.jfr MyApp
+
+# Compare
+ap-query diff before.jfr after.jfr
+```
+
+### Startup vs Steady-State
+
+Compare different phases of execution:
+
+```bash
+ap-query diff app.jfr --from 0s --to 10s --vs-from 1m --vs-to 1m10s
+```
+
+## Supported Input Formats
+
+- **JFR** (Java Flight Recorder): Supports all features including time windows
+- **pprof**: Two-file comparison only (no time windows)
+- **Collapsed stacks**: Two-file comparison only
+- **Mixed**: Can compare different formats (e.g., JFR vs pprof)
+
+<Warning>
+Time window comparison (`--from`, `--to`, `--vs-from`, `--vs-to`) requires a single JFR file with timestamp metadata.
+</Warning>
+
+## Tips
+
+<Tip>
+**Choosing --min-delta**: Start with the default (0.5%) for sensitive detection. Increase to 2-5% to reduce noise in production comparisons.
+</Tip>
+
+<Tip>
+**Using --fqn**: Enable when you have methods with identical short names from different packages. This changes aggregation granularity.
+</Tip>
+
+<Tip>
+**Reading deltas**: A +10% delta means the method went from 5% to 15% self time, not that it increased by 10% of its original value.
+</Tip>
+
+## See Also
+
+- [hot](/commands/hot) - View hottest methods in a single profile
+- [script](/commands/script) - Use `diff()` function for programmatic comparisons
+- [events](/commands/events) - List available event types in a profile

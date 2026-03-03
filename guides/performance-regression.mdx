@@ -1,0 +1,469 @@
+---
+title: Performance Regression Detection
+description: Compare profiles to detect regressions, improvements, and new hotspots
+---
+
+## Overview
+
+The `diff` command compares two profiles to identify:
+- **REGRESSION**: Methods that got slower (self% increased)
+- **IMPROVEMENT**: Methods that got faster (self% decreased)
+- **NEW**: Methods that appeared (absent in "before")
+- **GONE**: Methods that disappeared (absent in "after")
+
+## Basic Usage
+
+### Compare Two Files
+
+```bash
+ap-query diff before.jfr after.jfr
+```
+
+Output:
+```
+REGRESSION
+  HashMap.resize     12.3% -> 28.7%  (+16.4%)
+  String.split        5.2% -> 12.1%  (+6.9%)
+
+IMPROVEMENT
+  JSON.parse         18.9% ->  8.3%  (-10.6%)
+  Thread.sleep       25.4% -> 12.1%  (-13.3%)
+
+NEW
+  Cache.evict         7.2%
+
+GONE
+  OldMethod.process  14.5%
+```
+
+Each entry shows:
+- **Method name**
+- **Before %** → **After %**
+- **Delta** (change in self%)
+
+<Note>
+  Diff compares **self%** (time spent in the method itself), not total time.
+</Note>
+
+## Window-Based Diff (Single File)
+
+Compare two time windows in one JFR recording:
+
+```bash
+ap-query diff profile.jfr \
+  --from 55s --to 1m05s \
+  --vs-from 2m45s --vs-to 3m10s
+```
+
+Output:
+```
+REGRESSION
+  HashMap.get      8.2% -> 19.5%  (+11.3%)
+
+IMPROVEMENT
+  Thread.yield    32.1% -> 14.6%  (-17.5%)
+```
+
+**Use cases**:
+- Before/after a configuration change in one session
+- Compare low-load vs high-load periods
+- Detect degradation during a long run
+
+<Tip>
+  Window-based diff avoids recording two separate profiles for comparisons.
+</Tip>
+
+## Interpreting Results
+
+### Regression
+
+Method's self% **increased** (got slower or more frequent):
+
+```
+REGRESSION
+  HashMap.resize     12.3% -> 28.7%  (+16.4%)
+```
+
+**What it means**:
+- HashMap resizing went from 12.3% to 28.7% of CPU time
+- Absolute increase: +16.4 percentage points
+
+**Possible causes**:
+- Increased load
+- Larger data structures
+- Code change introduced inefficiency
+- JIT deoptimization
+
+### Improvement
+
+Method's self% **decreased** (got faster or less frequent):
+
+```
+IMPROVEMENT
+  JSON.parse         18.9% ->  8.3%  (-10.6%)
+```
+
+**What it means**:
+- JSON parsing dropped from 18.9% to 8.3%
+- Absolute decrease: -10.6 percentage points
+
+**Possible causes**:
+- Optimization applied
+- Caching added
+- Reduced call frequency
+- JIT compilation kicked in
+
+### New
+
+Method **appeared** in "after" but was absent in "before":
+
+```
+NEW
+  Cache.evict         7.2%
+```
+
+**What it means**:
+- Cache eviction became a hotspot (0% → 7.2%)
+
+**Possible causes**:
+- New feature added
+- Code path activated by workload change
+- Method renamed/moved (appears as new)
+- Sampling captured different execution
+
+### Gone
+
+Method **disappeared** from "after" (was in "before"):
+
+```
+GONE
+  OldMethod.process  14.5%
+```
+
+**What it means**:
+- Method dropped from 14.5% to 0%
+
+**Possible causes**:
+- Code removed/refactored
+- Feature disabled
+- Workload stopped triggering it
+- Method inlined by JIT (merged into caller)
+
+<Warning>
+  JIT inlining can cause methods to "disappear" from profiles even without code changes.
+</Warning>
+
+## Filtering Changes
+
+### Minimum Delta Threshold
+
+Hide small changes with `--min-delta`:
+
+```bash
+ap-query diff before.jfr after.jfr --min-delta 5.0
+```
+
+Only shows changes ≥ 5.0 percentage points.
+
+Default: `0.5` (0.5% threshold).
+
+**Use cases**:
+- Focus on significant regressions
+- Ignore noise from JIT/GC variations
+- CI gates for major changes only
+
+### Limit Output Rows
+
+```bash
+ap-query diff before.jfr after.jfr --top 5
+```
+
+Shows top 5 entries per category (REGRESSION, IMPROVEMENT, NEW, GONE).
+
+Default: unlimited.
+
+## Cross-Format Diffs
+
+Compare different profile formats:
+
+```bash
+# JFR vs pprof
+ap-query diff baseline.jfr optimized.pb.gz
+
+# JFR vs collapsed text
+ap-query diff before.jfr after.collapsed
+
+# pprof vs pprof
+ap-query diff go-before.pprof go-after.pprof
+```
+
+Event type resolution:
+- Both have `cpu` → use `cpu`
+- Only one has `cpu` → use that side's default
+- Explicit `--event` flag overrides
+
+## Event Type Selection
+
+### Explicit Event
+
+```bash
+ap-query diff before.jfr after.jfr --event wall
+```
+
+Compare wall-clock profiles (blocking time).
+
+### Auto-Detection
+
+If both files have the same event, it's selected automatically:
+
+```
+Event: cpu (auto-selected)
+```
+
+If events differ, ap-query picks the most common one and warns:
+
+```
+Event: cpu (auto-selected; before has cpu, after has cpu+wall)
+```
+
+## Combining with Filters
+
+### Thread-Specific Diff
+
+```bash
+ap-query diff before.jfr after.jfr -t "http-nio"
+```
+
+Compare only HTTP request handler threads.
+
+### Fully-Qualified Names
+
+```bash
+ap-query diff before.jfr after.jfr --fqn
+```
+
+Use fully-qualified class names (e.g., `java.util.HashMap.resize`).
+
+**Why?** Disambiguates methods with the same short name:
+- `com.example.Service.process`
+- `com.util.Service.process`
+
+Without `--fqn`, these merge into `Service.process`.
+
+### Time Window + Thread
+
+```bash
+ap-query diff profile.jfr \
+  -t "worker" \
+  --from 0s --to 30s \
+  --vs-from 2m --vs-to 2m30s
+```
+
+Compare worker threads across two time windows.
+
+## Real-World Workflows
+
+### CI Regression Gate
+
+<Steps>
+  <Step title="Profile baseline and PR">
+    ```bash
+    # On main branch
+    ap-query hot baseline.jfr --assert-below 15.0
+    
+    # On PR branch
+    ap-query hot pr.jfr --assert-below 15.0
+    ```
+  </Step>
+
+  <Step title="Compare and detect regressions">
+    ```bash
+    ap-query diff baseline.jfr pr.jfr --min-delta 2.0 > diff.txt
+    
+    # Fail CI if regressions exist
+    grep -q "REGRESSION" diff.txt && exit 1
+    ```
+  </Step>
+</Steps>
+
+See [CI Integration](./ci-integration) for details.
+
+### Load Test Comparison
+
+```bash
+# Profile under 100 RPS
+ap-query hot low-load.jfr > low.txt
+
+# Profile under 1000 RPS
+ap-query hot high-load.jfr > high.txt
+
+# Identify concurrency bottlenecks
+ap-query diff low-load.jfr high-load.jfr --event lock
+```
+
+Lock contention often appears as `NEW` under high load.
+
+### Before/After Optimization
+
+```bash
+ap-query diff before-cache.jfr after-cache.jfr
+```
+
+Expected:
+- **IMPROVEMENT**: Cache hit paths get faster
+- **NEW**: Cache eviction logic appears
+- **GONE**: Expensive computations disappear
+
+### Rolling Upgrade Validation
+
+```bash
+# Profile old version
+ap-query hot prod-v1.jfr > v1.txt
+
+# Profile new version
+ap-query hot prod-v2.jfr > v2.txt
+
+# Compare
+ap-query diff prod-v1.jfr prod-v2.jfr --min-delta 3.0
+```
+
+Detect unexpected regressions in production.
+
+## Diff Output Structure
+
+### Section Order
+
+1. **REGRESSION** — Sorted by largest delta (highest increase)
+2. **IMPROVEMENT** — Sorted by largest delta (biggest decrease)
+3. **NEW** — Sorted by self% in "after"
+4. **GONE** — Sorted by self% in "before"
+
+### No Changes
+
+If no methods cross the `--min-delta` threshold:
+
+```
+no significant changes
+```
+
+### Empty Profiles
+
+If either side is empty:
+
+```
+NEW
+  (all methods from "after")
+```
+
+or
+
+```
+GONE
+  (all methods from "before")
+```
+
+## Advanced Use Cases
+
+### Multi-Stage Diff
+
+Compare three profiles:
+
+```bash
+ap-query diff v1.jfr v2.jfr > v1-v2.txt
+ap-query diff v2.jfr v3.jfr > v2-v3.txt
+ap-query diff v1.jfr v3.jfr > v1-v3.txt
+```
+
+Track progression across versions.
+
+### Split and Compare
+
+Use Starlark to split a recording and compare halves:
+
+```python
+p = open("profile.jfr")
+half = p.duration / 2
+parts = p.split([half])
+
+d = diff(parts[0], parts[1], min_delta=1.0)
+for e in d.regressions:
+    print(e.name, "+" + str(e.delta) + "%")
+```
+
+See [Starlark Scripting](./starlark-scripting).
+
+### Automated Regression Reports
+
+Generate a report:
+
+```bash
+ap-query diff baseline.jfr candidate.jfr --min-delta 2.0 | \
+  awk '/REGRESSION/,/^$/' > regressions.txt
+
+if [ -s regressions.txt ]; then
+  echo "Regressions detected!"
+  cat regressions.txt
+fi
+```
+
+## Common Pitfalls
+
+### JIT Effects
+
+JIT compilation changes method visibility:
+- **Cold start**: Methods appear in early samples
+- **Warm JVM**: Methods disappear after inlining
+
+**Solution**: Exclude startup phases:
+
+```bash
+ap-query diff before.jfr after.jfr --from 30s
+```
+
+### Sampling Noise
+
+Short profiles have high variance:
+
+```bash
+# 5-second profiles → noisy diffs
+ap-query diff 5s-before.jfr 5s-after.jfr
+```
+
+**Solution**: Profile for 30+ seconds and use `--min-delta`:
+
+```bash
+ap-query diff 30s-before.jfr 30s-after.jfr --min-delta 5.0
+```
+
+### Different Workloads
+
+Comparing incompatible workloads produces misleading results:
+
+```bash
+# Wrong: REST API vs batch job
+ap-query diff api.jfr batch.jfr
+```
+
+**Solution**: Ensure workloads are comparable (same test, similar load).
+
+### Mixed Event Types
+
+Comparing CPU vs wall-clock:
+
+```bash
+ap-query diff cpu.jfr wall.jfr
+# Compares different metrics — results are meaningless
+```
+
+**Solution**: Use `--event` to ensure same event type:
+
+```bash
+ap-query diff before.jfr after.jfr --event cpu
+```
+
+## Related Workflows
+
+- [Time Range Filtering](./time-range-filtering) — Window-based diffs
+- [Thread Filtering](./thread-filtering) — Per-thread diff
+- [CI Integration](./ci-integration) — Automated regression detection
+- [Starlark Scripting](./starlark-scripting) — Custom diff logic

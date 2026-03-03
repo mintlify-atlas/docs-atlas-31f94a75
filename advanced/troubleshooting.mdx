@@ -1,0 +1,325 @@
+---
+title: Troubleshooting
+description: Common issues and solutions when using ap-query
+---
+
+This page covers common issues and how to resolve them.
+
+## No Matches Found
+
+<Accordion title="Error: 'no stacks matching <method>'">
+  **Cause**: The method name you specified with `-m` doesn't match any frames in the profile.
+
+  **Solution**: ap-query provides fuzzy suggestions when no exact match is found:
+
+  ```bash
+  $ ap-query hot profile.jfr -m HasMap.resize
+  error: no stacks matching 'HasMap.resize'
+
+  Did you mean:
+    HashMap.resize
+    HashMap.resize0
+    HashSet.add
+    Hashtable.rehash
+  ```
+
+  **Common causes**:
+  - Typo in method name (check fuzzy suggestions)
+  - Shell variable expansion ate `$` in inner class names (e.g., `Handler$1.run` becomes `Handler.run`)
+  - Method doesn't appear in the profile (it's not hot or was optimized away)
+  - Wrong event type selected (method only appears in `wall`, not `cpu`)
+
+  **Shell expansion workaround**:
+  ```bash
+  # Wrong: shell interprets $1 as variable
+  ap-query hot profile.jfr -m Handler$1.run
+
+  # Correct: quote to prevent expansion
+  ap-query hot profile.jfr -m 'Handler$1.run'
+  ```
+
+  ap-query warns you about this when it detects potential shell expansion issues.
+</Accordion>
+
+## Empty Profiles
+
+<Accordion title="Error: 'no samples (empty profile or all filtered out)'">
+  **Cause**: The profile has no samples, or all samples were removed by filters.
+
+  **Common scenarios**:
+
+  1. **Empty recording**: The profiled process had no activity during recording
+  ```bash
+  $ ap-query hot empty.jfr
+  error: no samples (empty profile or all filtered out)
+  ```
+  **Solution**: Record for a longer duration or while the application is under load.
+
+  2. **Time window outside recording range**:
+  ```bash
+  $ ap-query hot profile.jfr --from 5m --to 6m
+  # Recording was only 30 seconds long
+  error: no samples (empty profile or all filtered out)
+  ```
+  **Solution**: Check recording duration with `ap-query info profile.jfr` first.
+
+  3. **Thread filter matched nothing**:
+  ```bash
+  $ ap-query hot profile.jfr -t "worker-thread"
+  # No threads named "worker-thread" existed
+  error: no samples (empty profile or all filtered out)
+  ```
+  **Solution**: Use `ap-query threads profile.jfr` to see available thread names.
+
+  4. **All samples removed by `--no-idle`**:
+  ```bash
+  $ ap-query hot profile.jfr --event wall --no-idle
+  # All samples were idle (epoll_wait, park, futex)
+  error: no samples (empty profile or all filtered out)
+  ```
+  **Solution**: Remove `--no-idle` or investigate why application is entirely idle.
+</Accordion>
+
+## Event Type Errors
+
+<Accordion title="Error: 'event not found (available: ...)'">
+  **Cause**: You explicitly requested an event type (e.g., `--event wall`) that doesn't exist in the profile.
+
+  **Example**:
+  ```bash
+  $ ap-query hot profile.jfr --event wall
+  error: event "wall" not found (available: cpu, alloc)
+  ```
+
+  **Solution**: Use one of the available events listed in the error message, or omit `--event` to use the default (`cpu`).
+
+  **Check available events**:
+  ```bash
+  ap-query events profile.jfr
+  ```
+
+  **Why this happens**:
+  - Profile was recorded with only CPU sampling: `asprof -o jfr -f profile.jfr <pid>` (default is cpu only)
+  - You requested `wall` but recording used CPU: `asprof -e cpu` (not `wall`)
+
+  **How to record multiple events** (requires separate recordings):
+  ```bash
+  # CPU recording
+  asprof -d 30 -o jfr -f cpu.jfr <pid>
+
+  # Wall recording (separate invocation)
+  asprof -d 30 -e wall -o jfr -f wall.jfr <pid>
+  ```
+</Accordion>
+
+<Accordion title="Error: 'unknown event type' (collapsed text)">
+  **Cause**: You specified `--event` for a collapsed-stack text file, which has no event metadata.
+
+  **Example**:
+  ```bash
+  $ ap-query hot profile.collapsed --event wall
+  error: unknown event type "wall" (valid: cpu, wall, alloc, lock)
+  ```
+
+  **Solution**: Omit `--event` when using collapsed text, or re-profile with `-o jfr` to capture event types.
+
+  Collapsed text format doesn't preserve event types — all samples are merged together. If you need event-specific analysis, record in JFR format.
+</Accordion>
+
+## Format Detection Issues
+
+<Accordion title="stdin detection fails or treats binary as text">
+  **Cause**: ap-query auto-detects stdin format by inspecting the first 256 bytes. If the data looks binary (high bytes, control chars), it tries pprof; otherwise, it parses as collapsed text.
+
+  **Binary detection logic** (from `parse.go:stdinLooksBinary`):
+  ```go
+  // Collapsed text is printable ASCII (0x20–0x7E) + whitespace (\n, \r, \t)
+  // Anything else (control chars < 0x20, high bytes >= 0x7F) → binary
+  for _, b := range data[:256] {
+      if b > 0x7e || (b < 0x20 && b != '\n' && b != '\r' && b != '\t') {
+          return true  // Binary (try pprof)
+      }
+  }
+  return false  // Text (try collapsed)
+  ```
+
+  **If pprof parsing fails on valid UTF-8 data**, ap-query falls back to collapsed text (handles non-ASCII method names like `café`).
+
+  **Workaround for ambiguous input**: Use explicit file extensions instead of stdin:
+  ```bash
+  # Instead of:
+  cat profile.pb.gz | ap-query hot -
+
+  # Use:
+  ap-query hot profile.pb.gz
+  ```
+
+  For collapsed text with UTF-8 characters, ap-query will auto-detect correctly after pprof parse fails.
+</Accordion>
+
+<Accordion title="Format extension not recognized">
+  **Cause**: ap-query detects format based on file extension:
+
+  - `.jfr` / `.jfr.gz` → JFR
+  - `.pb.gz` / `.pb` / `.pprof` / `.pprof.gz` → pprof
+  - Everything else → collapsed text
+
+  **Example of wrong detection**:
+  ```bash
+  # File is pprof but named incorrectly
+  $ mv cpu.pb.gz cpu.data
+  $ ap-query hot cpu.data
+  # Tries collapsed text parser, fails
+  ```
+
+  **Solution**: Rename files to use correct extensions:
+  ```bash
+  mv cpu.data cpu.pb.gz
+  ap-query hot cpu.pb.gz
+  ```
+
+  Or use explicit format hint via stdin with a symlink:
+  ```bash
+  ln -s cpu.data cpu.pb.gz
+  ap-query hot cpu.pb.gz
+  ```
+</Accordion>
+
+## Timeline Command Errors
+
+<Accordion title="Error: 'timeline requires a JFR file'">
+  **Cause**: You tried to use `timeline` command on a pprof or collapsed text file.
+
+  **Example**:
+  ```bash
+  $ ap-query timeline profile.pb.gz
+  error: timeline requires a JFR file (pprof and collapsed text lack per-sample timestamps)
+  ```
+
+  **Solution**: Timeline analysis requires per-sample timestamps, which only JFR format provides. Re-record using async-profiler with `-o jfr`.
+
+  **Why pprof doesn't work**: pprof aggregates samples without timestamps. The `timedEvents` field is always `nil` for pprof profiles.
+</Accordion>
+
+<Accordion title="Warning: '--from/--to ignored for non-JFR input'">
+  **Cause**: You used `--from` or `--to` with a pprof or collapsed text file.
+
+  **Example**:
+  ```bash
+  $ ap-query hot profile.pb.gz --from 10s --to 20s
+  warning: --from/--to ignored for non-JFR input (no timestamps)
+  ```
+
+  **Solution**: Time-range filtering requires per-sample timestamps. Use JFR format instead.
+</Accordion>
+
+## Large Profile Performance
+
+<Accordion title="Warning: 'N events collected; consider using --from/--to'">
+  **Cause**: When collecting timed events (for `timeline` or `--from`/`--to`), ap-query loads all samples into memory. Profiles with >10 million events trigger a performance warning.
+
+  **Example**:
+  ```bash
+  $ ap-query timeline very-long-recording.jfr
+  warning: 15000000 events collected; consider using --from/--to to narrow the time window
+  ```
+
+  **Solution**: Narrow the time window to reduce memory usage:
+  ```bash
+  # First, find the interesting window
+  ap-query info very-long-recording.jfr
+
+  # Then zoom in
+  ap-query timeline very-long-recording.jfr --from 5m --to 6m
+  ```
+
+  For non-timeline commands, this warning doesn't appear because ap-query aggregates samples during parsing instead of storing them individually.
+</Accordion>
+
+<Accordion title="Slow parsing of large JFR files">
+  **Cause**: Large JFR files (>500MB) can take several seconds to parse.
+
+  **Optimization tips**:
+  - Use `--from`/`--to` to parse only a time window (reduces memory and time)
+  - Use `--thread` to filter to specific threads early
+  - Convert to collapsed format once and reuse: `ap-query collapse profile.jfr > profile.collapsed`
+  - Split large recordings into smaller chunks during collection: `asprof -d 30` instead of `asprof -d 600`
+
+  **Pre-allocate buffer**: For non-gzipped JFR files, ap-query pre-allocates the read buffer to avoid slice growing (from `parse.go:readJFRBytes`).
+</Accordion>
+
+## Thread Filtering Issues
+
+<Accordion title="Thread filter matched nothing">
+  **Cause**: The `-t` thread filter substring didn't match any thread names.
+
+  **Example**:
+  ```bash
+  $ ap-query hot profile.jfr -t "http-worker"
+  Thread filter: http-worker — 0/50000 samples (0.0%)
+  error: no samples (empty profile or all filtered out)
+  ```
+
+  **Solution**: Use `threads` command to see available thread names:
+  ```bash
+  ap-query threads profile.jfr
+  ```
+
+  Thread matching is substring-based and case-sensitive. Common patterns:
+  ```bash
+  # Match all "http-nio-*" threads
+  ap-query hot profile.jfr -t "http-nio"
+
+  # Match specific thread
+  ap-query hot profile.jfr -t "http-nio-8080-exec-42"
+
+  # Use --group to see normalized thread groups
+  ap-query threads profile.jfr --group
+  ```
+</Accordion>
+
+## Installation and Update Issues
+
+<Accordion title="Error: 'cannot self-update a dev build'">
+  **Cause**: You're running a `dev` version (built from source via `go build` or `go install`) and tried to use `ap-query update`.
+
+  **Solution**: If installed via `go install`:
+  ```bash
+  go install github.com/jerrinot/ap-query@latest
+  ```
+
+  If built from source:
+  ```bash
+  cd ap-query
+  git pull
+  go build -o ap-query .
+  ```
+
+  To use auto-update, download a release binary from [GitHub releases](https://github.com/jerrinot/ap-query/releases/latest).
+</Accordion>
+
+<Accordion title="Update checksum mismatch">
+  **Cause**: Downloaded update binary doesn't match published SHA256 checksum.
+
+  **This is a security error**. Do not ignore it.
+
+  **Solution**:
+  1. Check your network connection (proxy, MITM, DNS issues?)
+  2. Retry the update: `ap-query update`
+  3. If it persists, manually download from [GitHub releases](https://github.com/jerrinot/ap-query/releases/latest) and verify checksums yourself
+  4. Report the issue if you suspect a release integrity problem
+</Accordion>
+
+## Getting Help
+
+If you encounter an issue not covered here:
+
+1. **Check command-specific help**: `ap-query <command> --help`
+2. **Use `info` to inspect profile metadata**: `ap-query info profile.jfr`
+3. **Use `events` to see available event types**: `ap-query events profile.jfr`
+4. **Check recording command**: Verify async-profiler flags (e.g., `-e cpu` vs `-e wall`)
+5. **Report bugs**: Open an issue at [github.com/jerrinot/ap-query/issues](https://github.com/jerrinot/ap-query/issues)
+
+<Info>
+Include the output of `ap-query version` and the failing command when reporting issues.
+</Info>

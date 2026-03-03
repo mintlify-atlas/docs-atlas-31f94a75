@@ -1,0 +1,252 @@
+---
+title: collapse
+description: Convert profile to collapsed stack text format
+---
+
+## Overview
+
+The `collapse` command converts any supported profile format (JFR, pprof, or already-collapsed text) into collapsed stack text format. This format is widely used for:
+- Generating flamegraphs
+- Piping to other analysis tools
+- Text-based profile storage and transmission
+
+## Usage
+
+```bash
+ap-query collapse <file> [flags]
+```
+
+## Flags
+
+### Shared Flags
+
+Common flags supported by most commands:
+
+<ParamField path="--event" type="string" default="cpu">
+  Event type to extract: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name
+</ParamField>
+
+<ParamField path="--thread" type="string">
+  Filter to threads matching substring
+</ParamField>
+
+<ParamField path="--start" type="duration">
+  Start time of window (JFR only)
+</ParamField>
+
+<ParamField path="--end" type="duration">
+  End time of window (JFR only)
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean" default="false">
+  Remove common idle frames from stack leaves
+</ParamField>
+
+## Output Format
+
+Outputs one stack per line in the format:
+```
+[thread];frame1;frame2;...;frameN count
+```
+
+- **Frames**: Semicolon-separated from root (frame1) to leaf (frameN)
+- **Thread**: Optional thread name prefix in brackets
+- **Count**: Sample count for this unique stack
+
+Example output:
+```
+[worker-1];Thread.run;App.main;Service.handle;HashMap.put 150
+[worker-2];Thread.run;App.main;Service.handle;Logger.log 45
+Thread.run;TaskRunner.execute;Cache.get 89
+```
+
+## Examples
+
+### Convert JFR to Collapsed Format
+
+```bash
+ap-query collapse profile.jfr > stacks.collapsed
+```
+
+### Extract Specific Event Type
+
+```bash
+# Convert allocation profile
+ap-query collapse profile.jfr --event alloc > alloc.collapsed
+
+# Convert wall-clock profile
+ap-query collapse profile.jfr --event wall > wall.collapsed
+```
+
+### Filter by Thread
+
+```bash
+ap-query collapse profile.jfr --thread worker > worker-stacks.collapsed
+```
+
+### Extract Time Window
+
+```bash
+ap-query collapse profile.jfr --start 1m --end 2m > steady-state.collapsed
+```
+
+### Remove Idle Frames
+
+```bash
+ap-query collapse profile.jfr --no-idle > active-only.collapsed
+```
+
+### Generate Flamegraph
+
+Create a flamegraph SVG:
+
+```bash
+ap-query collapse profile.jfr | flamegraph.pl > flamegraph.svg
+```
+
+### Convert pprof to Collapsed
+
+```bash
+ap-query collapse cpu.pb.gz > pprof-stacks.collapsed
+```
+
+### Normalize Already-Collapsed File
+
+You can run `collapse` on already-collapsed input (useful for filtering):
+
+```bash
+ap-query collapse input.collapsed --thread http-worker > filtered.collapsed
+```
+
+## Use Cases
+
+### Flamegraph Generation
+
+Collapsed format is the standard input for Brendan Gregg's flamegraph tools:
+
+```bash
+# Basic flamegraph
+ap-query collapse profile.jfr | flamegraph.pl > flame.svg
+
+# Reverse (icicle) graph
+ap-query collapse profile.jfr | flamegraph.pl --reverse > icicle.svg
+
+# Differential flamegraph
+ap-query collapse before.jfr > before.collapsed
+ap-query collapse after.jfr > after.collapsed
+difffolded.pl before.collapsed after.collapsed | flamegraph.pl > diff-flame.svg
+```
+
+### Profile Archiving
+
+Store profiles in text format for version control:
+
+```bash
+ap-query collapse profile.jfr | gzip > profile.collapsed.gz
+```
+
+### Remote Analysis
+
+Generate collapsed format on a server, analyze locally:
+
+```bash
+# On server
+ssh server "ap-query collapse /var/log/app.jfr" > remote-profile.collapsed
+
+# Analyze locally
+ap-query hot remote-profile.collapsed
+```
+
+### Combining Multiple Profiles
+
+Merge multiple runs:
+
+```bash
+ap-query collapse run1.jfr > combined.collapsed
+ap-query collapse run2.jfr >> combined.collapsed
+ap-query hot combined.collapsed
+```
+
+### Creating Custom Filters
+
+Use text tools to filter stacks:
+
+```bash
+# Include only Java stacks
+ap-query collapse profile.jfr | grep -v "\[kernel\]" > java-only.collapsed
+
+# Exclude GC stacks
+ap-query collapse profile.jfr | grep -v "GC\|SafepointSynchronize" > no-gc.collapsed
+```
+
+## Format Details
+
+### Frame Names
+
+Frames use short names by default:
+- Java: `HashMap.put` (not `java.util.HashMap.put`)
+- Native: `__pthread_cond_wait`
+- Kernel: `do_syscall_64`
+
+### Thread Names
+
+Thread names are included if available:
+- JFR: Captures thread names from metadata
+- pprof: May include thread info depending on profiler
+- stdin/files: Parsed from `[thread-name];frame1;...` format
+
+### Sample Counts
+
+The count represents samples, not time or bytes:
+- **CPU profiling**: Each sample ≈ 10ms of CPU time (depends on sample rate)
+- **Allocation profiling**: Samples represent allocated objects (not bytes)
+- **Wall-clock profiling**: Each sample ≈ sampling interval
+
+<Note>
+Collapsed format loses some metadata (timestamps, line numbers, FQN). For advanced analysis requiring this data, use [script](/commands/script) instead.
+</Note>
+
+## Piping to Other Commands
+
+Collapsed output can be piped to any `ap-query` command that accepts stdin:
+
+```bash
+# Collapse → hot
+ap-query collapse profile.jfr | ap-query hot -
+
+# Collapse → filter → hot
+ap-query collapse profile.jfr | grep HashMap | ap-query hot -
+
+# Collapse → diff
+ap-query collapse before.jfr > before.collapsed
+ap-query collapse after.jfr > after.collapsed
+ap-query diff before.collapsed after.collapsed
+```
+
+## Stdin Support
+
+Read from stdin with `-`:
+
+```bash
+cat profile.jfr | ap-query collapse -
+```
+
+## Tips
+
+<Tip>
+**Storage efficiency**: Collapsed text files compress extremely well with gzip. A 100MB JFR file typically becomes 2-5MB as collapsed.gz.
+</Tip>
+
+<Tip>
+**Flamegraph colors**: When generating flamegraphs, use `--color java` for Java profiles or `--color hot` for highlighting hottest frames.
+</Tip>
+
+<Tip>
+**Preserving thread info**: Thread names are crucial for understanding concurrency patterns. Use `--thread` to focus on specific thread pools.
+</Tip>
+
+## See Also
+
+- [filter](/commands/filter) - Output only stacks matching a method
+- [hot](/commands/hot) - Analyze collapsed format
+- [script](/commands/script) - Use `emit()` and `emit_all()` for programmatic output

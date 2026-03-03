@@ -1,0 +1,188 @@
+---
+title: 'Scripting API Overview'
+description: 'Introduction to ap-query Starlark scripting for custom profile analysis'
+---
+
+The ap-query Starlark scripting API enables custom analysis workflows beyond the built-in CLI commands. Write scripts to filter profiles, compute custom metrics, compare time windows, and automate profiling checks in CI.
+
+## What is Starlark?
+
+Starlark is a Python dialect designed for embedded scripting. It features:
+- Python-like syntax (loops, functions, lambdas)
+- Immutable by default
+- No imports, classes, or exceptions
+- Deterministic and safe for sandboxed execution
+
+ap-query enables extensions like `while` loops, top-level control flow, sets, and recursion.
+
+## Basic Usage
+
+### Execute inline code
+
+```bash
+ap-query script -c 'print("Hello, profiling!")'
+```
+
+### Run a script file
+
+```bash
+ap-query script analyze.star
+```
+
+### Pass arguments
+
+```bash
+ap-query script check.star -- profile.jfr 10.0
+```
+
+Arguments are available as the `ARGS` list:
+
+```python
+print(ARGS)  # ["profile.jfr", "10.0"]
+```
+
+## Script Structure
+
+A typical script:
+
+1. Opens one or more profiles with `open()`
+2. Analyzes data using Profile methods
+3. Outputs results with `print()` or `emit()`
+4. Optionally exits with `fail()` for CI checks
+
+```python
+# Example: CI budget check
+p = open("profile.jfr")
+ser = p.filter(lambda s: s.has("Serialization"))
+ser_pct = 100.0 * ser.samples / p.samples
+
+if ser_pct > 10.0:
+    fail("Serialization overhead too high: " + str(round(ser_pct, 1)) + "%")
+
+print("Serialization: " + str(round(ser_pct, 1)) + "% ✓")
+```
+
+## Core Types
+
+The API provides specialized types for working with profile data:
+
+- [**Profile**](/api/profile) - A loaded profile scoped to one event type
+- [**Stack**](/api/stack) - A single stack trace with metadata
+- [**Bucket**](/api/bucket) - A time bucket from timeline analysis
+- **Frame** - A single stack frame with method/class/package info
+- **Method** - Hot method entry with self/total percentages
+- **Thread** - Thread metadata with sample distribution
+- **Diff** - Comparison result between two profiles
+
+See the [Profile API reference](/api/profile) to get started.
+
+## Global Functions
+
+See [Functions](/api/functions) for the complete list of global functions:
+
+- `open(path)` - Load a profile (JFR, pprof, collapsed)
+- `diff(a, b)` - Compare two profiles by self%
+- `emit(stack)` - Write a stack in collapsed format
+- `round(x, decimals)` - Round floats for display
+- `ljust(value, width)` / `rjust(value, width)` - String alignment
+- `match(string, pattern)` - Regex matching
+- `fail(msg)` - Print to stderr and exit 1
+- `warn(msg)` - Print to stderr, continue
+
+## Starlark Notes
+
+### String Formatting
+
+`%s`, `%d`, `%f` work but without width/padding/precision:
+
+```python
+# ❌ These don't work
+print("%-22s" % name)  # No padding modifiers
+print("%.1f" % value)  # No precision
+
+# ✓ Use helper functions instead
+print(ljust(name, 22))
+print(round(value, 1))
+```
+
+### Reserved Keywords
+
+`from` is reserved - use `start`/`end` kwargs:
+
+```python
+# ❌ This won't work
+p = open("profile.jfr", from="5s")
+
+# ✓ Use start/end instead
+p = open("profile.jfr", start="5s", end="10s")
+```
+
+### Collections
+
+```python
+# Dict methods
+groups.get(key, default)
+groups.items()
+groups.keys()
+groups.values()
+
+# String methods
+name.split(".")
+name.startswith("java")
+",".join(parts)
+name.replace(".", "/")
+name.strip()
+```
+
+## Example Scripts
+
+### Hot methods
+
+```python
+p = open("profile.jfr")
+for m in p.hot(10):
+    print(rjust(round(m.self_pct, 1), 6) + "%  " + m.name)
+```
+
+### Filter and emit pipeline
+
+```python
+p = open("profile.jfr")
+for s in p.stacks:
+    if s.has("HashMap"):
+        emit(s)
+```
+
+Pipe to `ap-query hot` for visualization:
+
+```bash
+ap-query script -c '...' | ap-query hot -
+```
+
+### Time window comparison
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="5s")
+if len(buckets) >= 2:
+    d = diff(buckets[0].profile, buckets[-1].profile)
+    for e in d.regressions:
+        print(e.name + " +" + str(round(e.delta, 1)) + "%")
+```
+
+### Group by thread pool
+
+```python
+p = open("profile.jfr")
+groups = p.group_by(lambda s: s.thread.split("-")[0] if s.thread else None)
+for name in sorted(groups.keys()):
+    pct = 100.0 * groups[name].samples / p.samples
+    print(ljust(name, 20) + " " + rjust(round(pct, 1), 6) + "%")
+```
+
+## Next Steps
+
+- [Profile API](/api/profile) - Profile type and methods
+- [Stack API](/api/stack) - Stack filtering and navigation
+- [Functions](/api/functions) - Global utility functions
+- [Bucket API](/api/bucket) - Timeline analysis

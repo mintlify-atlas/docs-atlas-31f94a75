@@ -1,0 +1,207 @@
+---
+title: tree
+description: Call tree descending from a method to show what it calls
+---
+
+The `tree` command displays a call tree starting from a method and descending to its callees. Use it to understand what a method calls and where time is spent downstream.
+
+## Usage
+
+```bash
+ap-query tree <file> [flags]
+```
+
+## What It Shows
+
+A hierarchical, indented tree showing:
+- The root method (or all roots if no method specified)
+- What it calls (children)
+- What those call (grandchildren)
+- Continuing to specified depth
+
+Each node shows:
+- Total percentage (samples containing this node)
+- Self percentage (samples where this is the leaf)
+- Method name
+
+## Flags
+
+<ParamField path="-m, --method" type="string">
+  Substring match on method name. If specified, tree starts from matching method(s). If omitted, shows full profile tree from all roots.
+</ParamField>
+
+<ParamField path="--depth" type="int" default="4">
+  Maximum depth of the tree. Controls how many levels of callees to show.
+</ParamField>
+
+<ParamField path="--min-pct" type="float" default="1.0">
+  Hide nodes below this percentage threshold. Reduces noise from uncommon paths.
+</ParamField>
+
+<ParamField path="--hide" type="regex">
+  Remove frames matching this regex before analysis. Useful for collapsing uninteresting intermediate frames.
+  
+  Example: `--hide "java\.util\..*"` removes all `java.util` frames.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only).
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only).
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Tree from Method
+
+```bash
+ap-query tree profile.jfr -m HashMap.put
+```
+
+```
+HashMap.put (total=18.4%, self=1.8%)
+  HashMap.putVal (16.2%, self=3.4%)
+    HashMap.resize (8.9%, self=3.1%)
+      Arrays.copyOf (4.2%, self=2.3%)
+      HashMap.newNode (1.4%, self=1.2%)
+    HashMap.hash (3.2%, self=3.2%)
+    HashMap.afterNodeInsertion (1.1%, self=1.1%)
+```
+
+<Note>
+  `total=X%` means X% of all samples pass through this method. `self=Y%` means Y% of samples have this as the leaf frame.
+</Note>
+
+### Full Profile Tree
+
+```bash
+ap-query tree profile.jfr
+```
+
+Shows the complete call tree starting from all entry points (main, thread start methods, etc.).
+
+### Deeper Tree
+
+```bash
+ap-query tree profile.jfr -m HashMap.put --depth 8
+```
+
+Show 8 levels of callees instead of the default 4.
+
+### Hide Low-Percentage Nodes
+
+```bash
+ap-query tree profile.jfr -m processRequest --min-pct 2.0
+```
+
+Only show nodes consuming ≥ 2% of samples.
+
+### Remove Framework Frames
+
+```bash
+ap-query tree profile.jfr -m UserService --hide "org\.springframework\..*"
+```
+
+Collapse all Spring framework frames to focus on application code.
+
+### Combined Filters
+
+```bash
+ap-query tree profile.jfr -m processRequest --depth 6 --min-pct 1.5 --thread worker
+```
+
+Show 6 levels, hide nodes < 1.5%, only analyze worker threads.
+
+## Reading the Output
+
+Indentation shows call hierarchy:
+
+```
+A (40%, self=5%)
+  B (25%, self=10%)
+    C (12%, self=12%)
+    D (3%, self=3%)
+  E (10%, self=10%)
+```
+
+- A calls B and E
+- B calls C and D
+- 40% of samples contain A
+- 5% of samples have A as the leaf (A doing work)
+- 25% of samples pass through B (called by A)
+- 10% of samples have B as the leaf
+
+<Tip>
+  When `total%` is much higher than `self%`, the method delegates most work to callees. When they're similar, the method does the work itself.
+</Tip>
+
+## Multiple Matches
+
+If `-m` matches multiple methods, the tree shows all matches:
+
+```bash
+ap-query tree profile.jfr -m hash
+```
+
+```
+# matched 3 methods: HashMap.hash, String.hashCode, HashSet.hash
+
+HashMap.hash (total=12.1%, self=8.3%)
+  ...
+
+String.hashCode (total=8.9%, self=5.1%)
+  ...
+
+HashSet.hash (total=2.3%, self=1.8%)
+  ...
+```
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Understanding Hot Methods">
+    After finding a hot method with `hot`, use `tree` to see what it calls
+  </Card>
+  
+  <Card title="Identifying Expensive Callees">
+    Discover which downstream methods consume the most time
+  </Card>
+  
+  <Card title="Algorithm Analysis">
+    Understand the execution flow and call patterns
+  </Card>
+  
+  <Card title="Finding Hidden Costs">
+    Spot expensive operations buried in call chains
+  </Card>
+</CardGroup>
+
+## Tree vs Trace vs Callers
+
+| Command | Direction | Shows | Use Case |
+|---------|-----------|-------|----------|
+| **tree** | Descending | All callees | What does this call? |
+| **trace** | Descending | Hottest path only | Critical path analysis |
+| **callers** | Ascending | Who calls this | Why is this called? |
+
+## See Also
+
+- [`trace`](/commands/trace) - Follow the single hottest path from method to leaf
+- [`callers`](/commands/callers) - See who calls a method
+- [`hot`](/commands/hot) - Find methods to investigate with tree

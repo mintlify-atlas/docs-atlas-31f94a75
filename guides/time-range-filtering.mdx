@@ -1,0 +1,339 @@
+---
+title: Time Range Filtering
+description: Focus analysis on specific time windows within JFR recordings
+---
+
+## Overview
+
+Time-range filtering lets you isolate performance issues to specific moments in a profiling session. Use `--from` and `--to` flags to zoom into problem windows identified by `timeline`.
+
+<Note>
+  Time-range filtering is **JFR-only**. Pprof and collapsed text formats lack per-sample timestamps.
+</Note>
+
+## Basic Usage
+
+### Window Syntax
+
+Specify durations relative to recording start using Go duration syntax:
+
+```bash
+# From 5 seconds to 10 seconds
+ap-query hot profile.jfr --from 5s --to 10s
+
+# First 30 seconds
+ap-query hot profile.jfr --to 30s
+
+# From 2 minutes onward
+ap-query hot profile.jfr --from 2m
+
+# Complex durations
+ap-query tree profile.jfr --from 1m30s --to 2m15s -m HashMap.resize
+```
+
+### Supported Formats
+
+| Format | Example | Meaning |
+|--------|---------|----------|
+| `Ns` | `5s`, `30s` | Seconds |
+| `Nms` | `500ms`, `1500ms` | Milliseconds |
+| `Nm` | `2m`, `5m` | Minutes |
+| `NmNs` | `1m30s`, `2m45s` | Combined |
+| `Nh` | `1h`, `2h30m` | Hours (rare) |
+
+<Tip>
+  Use `timeline` first to identify spike timestamps, then apply `--from`/`--to` to drill down.
+</Tip>
+
+## Commands Supporting Time Ranges
+
+All analysis commands accept `--from` and `--to`:
+
+- `hot` — Hot methods in window
+- `tree` — Call tree in window
+- `trace` — Hottest path in window
+- `callers` — Callers in window
+- `lines` — Line-level profile in window
+- `threads` — Thread distribution in window
+- `filter` — Filter stacks in window
+- `collapse` — Export window as collapsed text
+- `timeline` — Timeline of a sub-window
+
+## Workflow: Timeline-Driven Analysis
+
+<Steps>
+  <Step title="Identify spikes with timeline">
+    ```bash
+    ap-query timeline profile.jfr
+    ```
+    
+    Output:
+    ```
+    Event: cpu
+    
+    0.0s-2.5s       [████████░░░░░░░░░░░░] 1,234 samples  HashMap.resize
+    2.5s-5.0s       [██████████████████████] 2,891 samples  String.split
+    5.0s-7.5s       [█████░░░░░░░░░░░░░░░░] 876 samples    Thread.sleep
+    ```
+    
+    Spike at 2.5s-5.0s with 2,891 samples.
+  </Step>
+
+  <Step title="Zoom into spike window">
+    ```bash
+    ap-query hot profile.jfr --from 2.5s --to 5.0s --top 20
+    ```
+    
+    Shows hot methods only during the spike.
+  </Step>
+
+  <Step title="Drill into specific method">
+    ```bash
+    ap-query tree profile.jfr --from 2.5s --to 5.0s -m String.split --depth 8
+    ```
+    
+    Reveals call paths causing the spike.
+  </Step>
+</Steps>
+
+## Time Window Examples
+
+### Isolate Startup Phase
+
+```bash
+# First 10 seconds after start
+ap-query hot profile.jfr --to 10s
+```
+
+Useful for:
+- Initialization hotspots
+- Class loading overhead
+- Connection pool warmup
+
+### Exclude Warmup
+
+```bash
+# Skip first 30 seconds
+ap-query hot profile.jfr --from 30s
+```
+
+Useful for:
+- JIT-compiled steady state
+- Post-warmup performance
+- Ignoring startup noise
+
+### Capture Load Test Window
+
+```bash
+# 2 minutes into a 5-minute test
+ap-query hot profile.jfr --from 2m --to 3m
+```
+
+Useful for:
+- Comparing low vs high load
+- Isolating concurrency issues
+- Steady-state analysis
+
+### Narrow Down to Specific Incident
+
+```bash
+# 500ms window around a latency spike
+ap-query trace profile.jfr --from 4m30s --to 4m30.5s -m writeBytes
+```
+
+Useful for:
+- Pinpointing exact cause of outliers
+- Sub-second incident analysis
+
+## Combining with Other Filters
+
+### Time + Thread
+
+```bash
+ap-query hot profile.jfr --from 10s --to 20s -t "http-nio-8080"
+```
+
+Analyze specific thread group during a time window.
+
+### Time + Event Type
+
+```bash
+ap-query hot profile.jfr --from 1m --to 2m --event alloc
+```
+
+Focus on allocation hotspots during a window.
+
+### Time + Method Filter
+
+```bash
+ap-query filter profile.jfr --from 5s --to 15s -m HashMap | ap-query hot -
+```
+
+Filter stacks through a method, then re-analyze the filtered window.
+
+## Timeline with Time Ranges
+
+Apply a window before generating timeline:
+
+```bash
+# Timeline of a 1-minute sub-window
+ap-query timeline profile.jfr --from 2m --to 3m --resolution 5s
+```
+
+Output:
+```
+2m0s-2m5s       [██████████░░░░░░░░░░░░] 456 samples   Service.process
+2m5s-2m10s      [████████████████░░░░░░░░] 789 samples   HashMap.resize
+2m10s-2m15s     [██████████████████████░░] 1,234 samples String.concat
+```
+
+<Note>
+  Time labels adjust to the window: `2m0s` instead of `0.0s` when `--from 2m` is used.
+</Note>
+
+## Window-Based Diff Analysis
+
+Compare two time windows in a single JFR file:
+
+```bash
+ap-query diff profile.jfr \
+  --from 55s --to 1m05s \
+  --vs-from 2m45s --vs-to 3m10s
+```
+
+Output:
+```
+REGRESSION
+  HashMap.resize      5.2% -> 18.7%  (+13.5%)
+  String.split        2.1% ->  8.9%  (+6.8%)
+
+IMPROVEMENT
+  Thread.sleep       45.3% -> 12.1%  (-33.2%)
+```
+
+Useful for:
+- Before/after code change in one session
+- Comparing load levels
+- Detecting regressions during long runs
+
+<Tip>
+  Use `diff` with time windows to avoid recording two separate profiles.
+</Tip>
+
+## Automatic Window Clamping
+
+If `--from` or `--to` exceed recording duration, ap-query clamps them:
+
+```bash
+ap-query hot 10s-recording.jfr --from 5s --to 20s
+# Warning: --to 20s is beyond recording duration (10s); clamped to 10s
+```
+
+No error is raised — analysis continues with available data.
+
+## Duration Parsing Errors
+
+### Invalid Format
+
+```bash
+ap-query hot profile.jfr --from 5seconds
+# error: invalid duration "5seconds": use Go syntax (5s, 1m30s, etc.)
+```
+
+### Negative Durations
+
+```bash
+ap-query hot profile.jfr --from -5s
+# error: --from must be non-negative
+```
+
+### Window Inversion
+
+No error, but empty result if `--from > --to`:
+
+```bash
+ap-query hot profile.jfr --from 10s --to 5s
+# Warning: --from 10s > --to 5s; result will be empty
+```
+
+## Performance Considerations
+
+### Large Time Windows
+
+Filtering happens during parse — memory usage is proportional to filtered sample count, not total recording size.
+
+```bash
+# Efficient: parses only 10s window from 1-hour recording
+ap-query hot 1h-profile.jfr --from 30m --to 30m10s
+```
+
+### Multiple Windows
+
+Re-parsing the file for each window:
+
+```bash
+# Three separate parses
+ap-query hot profile.jfr --from 0s --to 10s
+ap-query hot profile.jfr --from 10s --to 20s
+ap-query hot profile.jfr --from 20s --to 30s
+```
+
+Consider using `timeline` + scripting for bulk window analysis (see [Starlark Scripting](./starlark-scripting)).
+
+## Common Patterns
+
+### Exclude Warm-Up, Compare Steady State
+
+```bash
+ap-query diff profile.jfr \
+  --from 30s --to 1m \
+  --vs-from 4m --vs-to 4m30s
+```
+
+### Analyze Per-Minute Buckets
+
+```bash
+for i in {0..4}; do
+  start=$((i * 60))
+  end=$(((i + 1) * 60))
+  echo "=== Minute $i ==="
+  ap-query hot profile.jfr --from ${start}s --to ${end}s --top 5
+done
+```
+
+### Find When a Method Became Hot
+
+```bash
+ap-query timeline profile.jfr -m HashMap.resize --pct --resolution 10s
+```
+
+Shows the method's percentage in each 10-second bucket.
+
+## Limitations
+
+### Format Support
+
+- ✅ **JFR**: Full support
+- ❌ **pprof**: No timestamps → warning printed, flags ignored
+- ❌ **Collapsed text**: No timestamps → warning printed, flags ignored
+
+### Stdin
+
+Time-range flags are ignored when reading from stdin:
+
+```bash
+ap-query hot - --from 5s --to 10s < profile.jfr
+# Warning: --from/--to ignored for stdin (parse happens before filtering)
+```
+
+Use file path instead:
+
+```bash
+ap-query hot profile.jfr --from 5s --to 10s
+```
+
+## Related Workflows
+
+- [Thread Filtering](./thread-filtering) — Combine time + thread filters
+- [Performance Regression](./performance-regression) — Window-based diff for before/after
+- [Starlark Scripting](./starlark-scripting) — Automated multi-window analysis

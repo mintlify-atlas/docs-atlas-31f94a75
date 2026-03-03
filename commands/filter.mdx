@@ -1,0 +1,232 @@
+---
+title: filter
+description: Extract stacks that pass through a specific method
+---
+
+## Overview
+
+The `filter` command searches for stacks containing a specific method and outputs them in collapsed stack format. This is useful for:
+- Isolating code paths that call a particular method
+- Creating focused profiles for specific functionality
+- Piping filtered stacks to other analysis tools
+
+## Usage
+
+```bash
+ap-query filter <file> -m <method> [flags]
+```
+
+## Flags
+
+<ParamField path="--method" type="string" required>
+  **Required.** Substring to match on method name. Short name or FQN matching.
+</ParamField>
+
+<ParamField path="--include-callers" type="boolean" default="false">
+  Include caller frames (frames above the matched method). By default, only frames from the matched method to the leaf are shown.
+</ParamField>
+
+### Shared Flags
+
+Common flags supported by most commands:
+
+<ParamField path="--event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name
+</ParamField>
+
+<ParamField path="--thread" type="string">
+  Filter to threads matching substring
+</ParamField>
+
+<ParamField path="--start" type="duration">
+  Start time of window (JFR only)
+</ParamField>
+
+<ParamField path="--end" type="duration">
+  End time of window (JFR only)
+</ParamField>
+
+## Output Format
+
+Outputs stacks in collapsed format:
+```
+[thread];frame1;frame2;...;frameN count
+```
+
+- One stack per line
+- Frames separated by semicolons
+- Optional thread name prefix in brackets
+- Sample count at the end
+
+By default, shows frames **from the matched method to the leaf**.
+
+With `--include-callers`, shows the **entire stack** (root to leaf).
+
+## Examples
+
+### Basic Filtering
+
+Find all stacks calling `HashMap.resize`:
+
+```bash
+ap-query filter profile.jfr -m HashMap.resize
+```
+
+Output:
+```
+HashMap.resize;HashMap.put;Map.putAll 42
+HashMap.resize;HashMap.computeIfAbsent 18
+```
+
+### Include Caller Context
+
+Show full stacks including callers:
+
+```bash
+ap-query filter profile.jfr -m HashMap.resize --include-callers
+```
+
+Output:
+```
+java.lang.Thread.run;com.example.App.main;HashMap.resize;HashMap.put 42
+java.lang.Thread.run;com.example.Service.process;HashMap.resize;HashMap.computeIfAbsent 18
+```
+
+### Filter and Analyze
+
+Pipe filtered stacks to `hot` for a focused analysis:
+
+```bash
+ap-query filter profile.jfr -m "HttpHandler" | ap-query hot -
+```
+
+This shows the hottest methods within HTTP handling code.
+
+### Filter Specific Thread
+
+Combine thread and method filtering:
+
+```bash
+ap-query filter profile.jfr -m "Database.query" --thread worker
+```
+
+### Filter Specific Event
+
+Find allocation stacks involving `ArrayList`:
+
+```bash
+ap-query filter profile.jfr -m ArrayList --event alloc
+```
+
+### Time Window Filtering
+
+Filter stacks from a specific time range:
+
+```bash
+ap-query filter profile.jfr -m "Cache.get" --start 1m --end 2m
+```
+
+## Pattern Matching
+
+The `-m` flag performs **substring matching** on both short names and fully-qualified names:
+
+```bash
+# Matches "HashMap.resize", "HashMap.put", etc.
+ap-query filter profile.jfr -m HashMap
+
+# Matches methods containing "resize"
+ap-query filter profile.jfr -m resize
+
+# Matches by package
+ap-query filter profile.jfr -m "java.util"
+
+# Matches by class and method
+ap-query filter profile.jfr -m "HashMap.put"
+```
+
+<Note>
+Pattern matching is case-sensitive substring search, not regex. Use the [script](/commands/script) command with `match()` for regex patterns.
+</Note>
+
+## Use Cases
+
+### Isolate Feature Paths
+
+Extract all stacks related to authentication:
+
+```bash
+ap-query filter profile.jfr -m AuthService > auth-stacks.collapsed
+```
+
+### Investigate Hotspot
+
+After `hot` identifies an expensive method, filter to see its call paths:
+
+```bash
+# Step 1: Find hot methods
+ap-query hot profile.jfr
+
+# Step 2: Filter for the hot method
+ap-query filter profile.jfr -m ExpensiveMethod --include-callers
+```
+
+### Create Focused Flamegraph
+
+Generate a flamegraph for specific functionality:
+
+```bash
+ap-query filter profile.jfr -m "Serialization" | \
+  flamegraph.pl > serialization.svg
+```
+
+### Compare Filtered Profiles
+
+Compare how a specific method performs in two runs:
+
+```bash
+ap-query filter before.jfr -m "CacheImpl" > before-cache.collapsed
+ap-query filter after.jfr -m "CacheImpl" > after-cache.collapsed
+ap-query diff before-cache.collapsed after-cache.collapsed
+```
+
+### Debug Missing Matches
+
+If no stacks match, verify the method exists:
+
+```bash
+ap-query hot profile.jfr | grep -i "method-name"
+```
+
+## Empty Results
+
+If no stacks match, you'll see:
+```
+no samples (empty profile or all filtered out)
+```
+
+Common reasons:
+- Method name typo or case mismatch
+- Method not present in the selected event type (try `--event wall` or `--event alloc`)
+- Method filtered out by `--thread` or time window
+- Method exists but was not sampled (not in hot path)
+
+## Tips
+
+<Tip>
+**Partial matches**: Use partial method names to catch variations. For example, `-m Logger` matches `Logger.info`, `Logger.debug`, etc.
+</Tip>
+
+<Tip>
+**Include callers for context**: Use `--include-callers` when you need to understand who calls the method. Omit it for cleaner output focused on the method's own call tree.
+</Tip>
+
+<Tip>
+**Pipe to hot**: After filtering, pipe to `ap-query hot -` to get a ranked list of methods within the filtered stacks.
+</Tip>
+
+## See Also
+
+- [hot](/commands/hot) - View hottest methods in a profile
+- [callers](/commands/callers) - Show methods that call into a specific method
+- [collapse](/commands/collapse) - Convert profiles to collapsed format without filtering
+- [script](/commands/script) - Use `Profile.filter()` for complex filtering logic

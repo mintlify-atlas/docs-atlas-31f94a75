@@ -1,0 +1,627 @@
+---
+title: Starlark Scripting
+description: Custom profiling analysis with Starlark scripting
+---
+
+## Overview
+
+The `script` command runs Starlark code to analyze profiles beyond what built-in commands can express. Use scripting for:
+
+- Cross-event correlation (compare CPU vs wall-clock)
+- Custom grouping and aggregation
+- Multi-file comparisons
+- Compound predicates
+- CI budget enforcement
+
+<Note>
+  Starlark is a Python-like language (subset of Python) designed for sandboxed scripting.
+</Note>
+
+## When to Use Scripting
+
+**Use built-in commands when**:
+- Analyzing a single file
+- Standard workflows (hot, tree, trace, diff)
+- Simple filtering
+
+**Use scripting when**:
+- Comparing 3+ profiles
+- Custom metrics/aggregations
+- Conditional logic based on profile contents
+- Automated reporting
+- Complex filtering (multiple conditions)
+
+## Basic Usage
+
+### Inline Script
+
+```bash
+ap-query script -c 'print("Hello from Starlark")'
+```
+
+Output:
+```
+Hello from Starlark
+```
+
+### Script File
+
+```bash
+echo 'print("Hello from file")' > script.star
+ap-query script script.star
+```
+
+Output:
+```
+Hello from file
+```
+
+### With Arguments
+
+```bash
+ap-query script script.star arg1 arg2
+```
+
+Access via `ARGS` list:
+
+```python
+print(ARGS[0])  # "arg1"
+print(ARGS[1])  # "arg2"
+```
+
+## Core API: open()
+
+### Load a Profile
+
+```python
+p = open("profile.jfr")
+print(p.samples)   # Total sample count
+print(p.duration)  # Recording duration (seconds)
+print(p.event)     # Event type (cpu, wall, etc.)
+```
+
+### Specify Event Type
+
+```python
+p = open("profile.jfr", event="wall")
+print(p.event)  # "wall"
+```
+
+### Time Window
+
+```python
+p = open("profile.jfr", start="5s", end="10s")
+print(p.start)  # 5.0
+print(p.end)    # 10.0
+print(p.samples)  # Samples in [5s, 10s)
+```
+
+Durations use Go syntax: `"500ms"`, `"2m"`, `"1m30s"`.
+
+<Tip>
+  Use `start`/`end` in `open()` instead of running `--from`/`--to` repeatedly.
+</Tip>
+
+## Profile Fields
+
+```python
+p = open("profile.jfr")
+
+# Metadata
+print(p.path)      # "profile.jfr"
+print(p.event)     # "cpu"
+print(p.events)    # ["cpu", "wall"] (list of available events)
+print(p.samples)   # 12,345 (int)
+print(p.duration)  # 30.5 (seconds, float)
+
+# Scope (for windowed profiles)
+print(p.start)     # 0.0 (seconds from recording start)
+print(p.end)       # 30.5 (seconds from recording start)
+
+# Stacks (list of Stack objects)
+for s in p.stacks:
+    print(s.samples, s.thread)
+```
+
+## Stack Objects
+
+```python
+p = open("profile.jfr")
+s = p.stacks[0]
+
+# Fields
+print(s.samples)   # Sample count (int)
+print(s.thread)    # Thread name (string)
+print(s.depth)     # Stack depth (int)
+print(s.frames)    # List of Frame objects
+print(s.leaf)      # Leaf frame (Frame)
+print(s.root)      # Root frame (Frame)
+
+# Methods
+if s.has("HashMap.resize"):
+    print("Stack contains HashMap.resize")
+
+if s.has_seq("Server.handle", "HashMap.put"):
+    print("Server.handle calls HashMap.put")
+
+above = s.above("Server.handle")  # Frames above (toward leaf)
+below = s.below("HashMap.put")    # Frames below (toward root)
+```
+
+## Frame Objects
+
+```python
+f = p.stacks[0].leaf
+
+# Short name (default display)
+print(f.name)      # "HashMap.resize"
+
+# Fully-qualified name
+print(f.fqn)       # "java.util.HashMap.resize"
+
+# Components (Java only)
+print(f.pkg)       # "java.util"
+print(f.cls)       # "HashMap"
+print(f.method)    # "resize"
+
+# Line number (if available)
+print(f.line)      # 42 (int, 0 if unavailable)
+```
+
+## Profile Methods
+
+### hot()
+
+Rank methods by self% or total%:
+
+```python
+p = open("profile.jfr")
+
+# Top 10 by self%
+for m in p.hot(10):
+    print(m.name, m.self_pct)
+
+# Top 5 by total%
+for m in p.hot(5, sort="total"):
+    print(m.name, m.total_pct)
+
+# Fully-qualified names
+for m in p.hot(fqn=True):
+    print(m.fqn)
+```
+
+**Method fields**:
+- `name` (string)
+- `fqn` (string)
+- `self` (int samples)
+- `self_pct` (float %)
+- `total` (int samples)
+- `total_pct` (float %)
+
+### filter()
+
+Filter stacks by predicate:
+
+```python
+p = open("profile.jfr")
+
+# Stacks containing HashMap
+filtered = p.filter(lambda s: s.has("HashMap"))
+print(filtered.samples)
+
+# Chain filters
+result = p.filter(lambda s: "worker" in s.thread) \
+          .filter(lambda s: s.has("Server"))
+```
+
+Returns a new Profile.
+
+### group_by()
+
+Group stacks by key:
+
+```python
+p = open("profile.jfr")
+
+# Group by thread
+groups = p.group_by(lambda s: s.thread if s.thread else None)
+
+for name in sorted(groups.keys()):
+    prof = groups[name]
+    print(name, prof.samples)
+```
+
+Returns a dict mapping keys to Profiles.
+
+<Note>
+  Stacks with `None` keys are excluded from the result.
+</Note>
+
+### threads()
+
+Get thread distribution:
+
+```python
+p = open("profile.jfr")
+
+# Top 10 threads
+for th in p.threads(10):
+    print(th.name, th.samples, th.pct)
+```
+
+**Thread fields**:
+- `name` (string)
+- `samples` (int)
+- `pct` (float %)
+
+### no_idle()
+
+Remove idle leaf frames:
+
+```python
+p = open("profile.jfr", event="wall")
+filtered = p.no_idle()
+print(filtered.samples)
+```
+
+Equivalent to `--no-idle` flag.
+
+### timeline()
+
+Generate time buckets:
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="5s")
+
+for b in buckets:
+    print(b.label, b.samples)
+```
+
+**Bucket fields**:
+- `label` (string, e.g., `"10.0s-15.0s"`)
+- `samples` (int)
+- `profile` (Profile for that bucket)
+- `hot_method` (string, or `None`)
+
+**Parameters**:
+- `buckets=N` — Number of buckets (default: auto ~20)
+- `resolution="5s"` — Fixed bucket width
+
+### split()
+
+Split profile at boundaries:
+
+```python
+p = open("profile.jfr")
+half = p.duration / 2
+parts = p.split([half])
+
+print(len(parts))        # 2
+print(parts[0].duration) # ~half
+print(parts[1].duration) # ~half
+```
+
+Boundaries are in seconds (float or duration string like `"5s"`).
+
+### summary()
+
+One-line summary string:
+
+```python
+p = open("profile.jfr")
+print(p.summary())
+# "profile.jfr: cpu, 12,345 samples, 30.5s"
+```
+
+## diff() Function
+
+Compare two profiles:
+
+```python
+before = open("before.jfr")
+after = open("after.jfr")
+
+d = diff(before, after, min_delta=0.5, top=0, fqn=False)
+
+# Categories
+for e in d.regressions:
+    print("REGRESSION", e.name, e.delta)
+
+for e in d.improvements:
+    print("IMPROVEMENT", e.name, e.delta)
+
+for e in d.added:
+    print("NEW", e.name, e.after)
+
+for e in d.removed:
+    print("GONE", e.name, e.before)
+
+# All changes
+for e in d.all:
+    print(e.name, e.before, e.after, e.delta)
+```
+
+**DiffEntry fields**:
+- `name` (string)
+- `fqn` (string)
+- `before` (float %)
+- `after` (float %)
+- `delta` (float, after - before)
+
+**Parameters**:
+- `min_delta` — Minimum % change (default: 0.5)
+- `top` — Limit per category (default: 0 = unlimited)
+- `fqn` — Use fully-qualified names (default: False)
+
+## Utility Functions
+
+### print()
+
+Output to stdout:
+
+```python
+print("Hello", "world")  # "Hello world"
+print(123)                # "123"
+```
+
+### warn()
+
+Output to stderr:
+
+```python
+warn("Warning message")
+```
+
+### fail()
+
+Exit with error:
+
+```python
+if p.samples == 0:
+    fail("Profile is empty")
+```
+
+Exits with code 1.
+
+### emit()
+
+Emit a stack in collapsed format:
+
+```python
+p = open("profile.jfr")
+for s in p.stacks:
+    if s.has("HashMap"):
+        emit(s)
+```
+
+Output:
+```
+[thread-1];Server.handle;HashMap.put 10
+[thread-2];HashMap.get 5
+```
+
+### emit_all()
+
+Emit all stacks:
+
+```python
+p = open("profile.jfr")
+filtered = p.filter(lambda s: s.has("HashMap"))
+emit_all(filtered)
+```
+
+### match()
+
+Regex matching:
+
+```python
+if match("com.example.Service", "example\\..*"):
+    print("Matches")
+```
+
+### round()
+
+Round floats:
+
+```python
+print(round(12.3456, decimals=2))  # 12.35
+```
+
+### ljust() / rjust()
+
+String justification:
+
+```python
+print(ljust("foo", 10))   # "foo       "
+print(rjust("bar", 10))   # "       bar"
+```
+
+## Common Patterns
+
+### Compare CPU vs Wall-Clock
+
+```python
+p_cpu = open("profile.jfr", event="cpu")
+p_wall = open("profile.jfr", event="wall").no_idle()
+
+print("CPU hotspots:")
+for m in p_cpu.hot(5):
+    print(" ", m.name, m.self_pct)
+
+print("Wall-clock blocking:")
+for m in p_wall.hot(5):
+    print(" ", m.name, m.self_pct)
+```
+
+### Multi-File Comparison
+
+```python
+files = ["v1.jfr", "v2.jfr", "v3.jfr"]
+profiles = [open(f) for f in files]
+
+for i, p in enumerate(profiles):
+    print("=== Version", i+1, "===")
+    for m in p.hot(3):
+        print(" ", m.name, m.self_pct)
+```
+
+### Windowed Diff
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="10s")
+
+for i in range(len(buckets) - 1):
+    b1 = buckets[i]
+    b2 = buckets[i+1]
+    d = diff(b1.profile, b2.profile, min_delta=2.0)
+    if len(d.regressions) > 0:
+        print(b1.label, "→", b2.label, "regressions:")
+        for e in d.regressions:
+            print(" ", e.name, "+" + str(e.delta))
+```
+
+### Conditional Analysis
+
+```python
+p = open("profile.jfr")
+
+if p.samples < 1000:
+    warn("Profile has fewer than 1000 samples; results may be noisy")
+
+top_method = p.hot(1)[0]
+if top_method.self_pct > 50.0:
+    fail("Top method " + top_method.name + " exceeds 50% (" + str(top_method.self_pct) + "%)")
+
+print("Profile looks good")
+```
+
+### Custom Grouping
+
+```python
+p = open("profile.jfr")
+
+# Group by package
+def package(s):
+    if len(s.frames) > 0:
+        return s.leaf.pkg
+    return None
+
+groups = p.group_by(package)
+
+for pkg in sorted(groups.keys()):
+    prof = groups[pkg]
+    print(pkg if pkg else "(no package)", "—", prof.samples, "samples")
+```
+
+### CI Budget Enforcement
+
+```python
+p = open("profile.jfr")
+
+# Enforce per-method budgets
+budgets = {
+    "HashMap.resize": 10.0,
+    "JSON.parse": 15.0,
+}
+
+for m in p.hot():
+    if m.name in budgets:
+        threshold = budgets[m.name]
+        if m.self_pct > threshold:
+            fail(m.name + " exceeds budget: " + str(m.self_pct) + "% > " + str(threshold) + "%")
+
+print("All budgets satisfied")
+```
+
+## Full API Reference
+
+Run `ap-query script --help` for the complete API reference (types, functions, examples).
+
+## Error Handling
+
+### Syntax Errors
+
+```python
+def broken(
+# error: syntax error: unexpected EOF
+```
+
+Exit code: 2
+
+### Runtime Errors
+
+```python
+open("nonexistent.jfr")
+# error: cannot open nonexistent.jfr: file not found
+```
+
+Exit code: 1
+
+### Timeouts
+
+Scripts timeout after 60 seconds (default). Customize via `STARLARK_TIMEOUT` environment variable:
+
+```bash
+STARLARK_TIMEOUT=120s ap-query script long-script.star
+```
+
+## Limitations
+
+- **No I/O**: Cannot read/write arbitrary files (security sandbox)
+- **No network**: Cannot make HTTP requests
+- **No imports**: Cannot import external modules
+- **No recursion limit**: Deep recursion may cause stack overflow
+
+<Warning>
+  Starlark is sandboxed but not resource-limited. Infinite loops will hang until timeout.
+</Warning>
+
+## Debugging Scripts
+
+### Use print() Liberally
+
+```python
+print("Loading profile...")
+p = open("profile.jfr")
+print("Samples:", p.samples)
+print("Event:", p.event)
+```
+
+### Inspect Types
+
+```python
+print(type(p))         # "Profile"
+print(type(p.stacks))  # "list"
+print(type(p.stacks[0]))  # "Stack"
+```
+
+### Check Lengths
+
+```python
+if len(p.stacks) == 0:
+    fail("No stacks in profile")
+```
+
+### Test Incrementally
+
+Build scripts step-by-step:
+
+```bash
+# Step 1: Load profile
+ap-query script -c 'p = open("profile.jfr"); print(p.samples)'
+
+# Step 2: Filter
+ap-query script -c 'p = open("profile.jfr").filter(lambda s: s.has("HashMap")); print(p.samples)'
+
+# Step 3: Analyze
+ap-query script -c 'p = open("profile.jfr").filter(lambda s: s.has("HashMap")); print(p.hot(5))'
+```
+
+## Related Workflows
+
+- [Performance Regression](./performance-regression) — Scripted diff logic
+- [CI Integration](./ci-integration) — Budget enforcement scripts
+- [Time Range Filtering](./time-range-filtering) — Window-based scripting
+- [Thread Filtering](./thread-filtering) — Multi-thread scripting

@@ -1,0 +1,118 @@
+---
+title: Introduction
+description: CLI tool for analyzing async-profiler JFR recordings, built for coding agents
+---
+
+## What is ap-query?
+
+ap-query is a command-line tool for analyzing [async-profiler](https://github.com/async-profiler/async-profiler) JFR (Java Flight Recorder) recordings and profiling data. It transforms raw profiling data into actionable insights through a suite of analysis commands designed for efficient, token-aware workflows.
+
+<Note>
+  ap-query is **built for coding agents** (Claude Code, Codex, etc.), not human-first interactive profiling workflows. It prioritizes compact, parseable output that helps agents identify performance issues without burning tokens or polluting context.
+</Note>
+
+## Why ap-query exists
+
+Raw profiling data overwhelms LLM agents. They burn tokens parsing massive stack traces, pollute their context with irrelevant data, and still miss critical hotspots. ap-query solves this by providing:
+
+- **Compact output**: Plain text summaries that agents can parse efficiently
+- **Targeted queries**: Commands that answer specific questions ("what's hot?", "who calls this?", "what changed?")
+- **Smart defaults**: Automatic event selection, idle filtering, and threshold-based reporting
+- **Agent-first design**: No interactive prompts, no JSON bloat, just actionable terminal output
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Hotspot triage" icon="fire">
+    Identify performance bottlenecks instantly with `ap-query hot` and `ap-query info` commands that rank methods by self-time and total-time.
+  </Card>
+  
+  <Card title="Call tree analysis" icon="sitemap">
+    Drill down into specific methods with `ap-query tree` and `ap-query callers` to understand calling patterns and attribution.
+  </Card>
+  
+  <Card title="Time-based analysis" icon="clock">
+    Analyze specific time windows in JFR recordings with `--from` and `--to` flags, or visualize performance over time with `ap-query timeline`.
+  </Card>
+  
+  <Card title="Performance regression detection" icon="chart-line">
+    Compare two profiles or time windows with `ap-query diff` to identify regressions, improvements, and new hotspots.
+  </Card>
+  
+  <Card title="Multiple input formats" icon="file-code">
+    Supports JFR binary files (`.jfr`, `.jfr.gz`), pprof protobuf (`.pb.gz`, `.pprof`), and collapsed stack text format.
+  </Card>
+  
+  <Card title="Event type support" icon="bullseye">
+    Analyze CPU profiling, wall-clock time, heap allocations, lock contention, and hardware performance counters.
+  </Card>
+</CardGroup>
+
+## Built for agents
+
+ap-query includes an agent skill system that teaches coding agents how to profile and analyze JVM applications:
+
+```bash
+# Install the agent skill for Claude Code or Codex
+ap-query init
+```
+
+Once installed, agents automatically know how to:
+- Profile Java applications with async-profiler
+- Analyze recordings with ap-query commands
+- Interpret results and suggest concrete optimizations
+- Drill down into hotspots with the right commands
+
+The skill embeds the exact paths to `asprof` and `ap-query` on your system, so agents can invoke profiling workflows without fumbling with PATH or installation details.
+
+## Example workflow
+
+Here's what a typical agent-driven profiling session looks like:
+
+<Steps>
+  <Step title="Profile the application">
+    The agent runs async-profiler to capture a 30-second CPU profile:
+    ```bash
+    asprof -d 30 -f profile.jfr <pid>
+    ```
+  </Step>
+  
+  <Step title="Triage with info">
+    Quick overview of events, threads, and hot methods:
+    ```bash
+    ap-query info profile.jfr
+    ```
+  </Step>
+  
+  <Step title="Drill down into hotspots">
+    Investigate the top method with tree and callers:
+    ```bash
+    ap-query tree profile.jfr -m HashMap.resize --depth 6
+    ap-query callers profile.jfr -m HashMap.resize
+    ```
+  </Step>
+  
+  <Step title="Report findings">
+    The agent synthesizes findings into concrete next actions: "60% CPU in HashMap.resize due to excessive map growth; consider pre-sizing maps or using alternative data structures."
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install ap-query and set up agent integration
+  </Card>
+  
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Profile your first application and run your first analysis
+  </Card>
+  
+  <Card title="Command Reference" icon="terminal" href="/commands/overview">
+    Explore all available analysis commands
+  </Card>
+  
+  <Card title="Agent Integration" icon="robot" href="/guides/agent-integration">
+    Deep dive into agent skill installation and usage
+  </Card>
+</CardGroup>

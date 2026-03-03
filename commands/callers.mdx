@@ -1,0 +1,265 @@
+---
+title: callers
+description: Callers tree ascending to a method to show who calls it
+---
+
+The `callers` command displays an inverted call tree, ascending from a method to show its callers. Use it to understand why a method is being called and from where.
+
+## Usage
+
+```bash
+ap-query callers <file> -m <method> [flags]
+```
+
+<Warning>
+  The `-m/--method` flag is required for the callers command.
+</Warning>
+
+## What It Shows
+
+An upward (inverted) tree starting from your specified method and showing:
+- The method itself
+- What calls it (parents)
+- What calls those (grandparents)
+- Continuing to specified depth
+
+Each node shows:
+- Percentage of samples where this caller leads to the target method
+- Caller method name
+
+## Flags
+
+<ParamField path="-m, --method" type="string" required>
+  Substring match on method name (required). The method to analyze callers for.
+</ParamField>
+
+<ParamField path="--depth" type="int" default="4">
+  Maximum depth of the callers tree. Controls how many levels of callers to show.
+</ParamField>
+
+<ParamField path="--min-pct" type="float" default="1.0">
+  Hide nodes below this percentage threshold. Reduces noise from uncommon call paths.
+</ParamField>
+
+<ParamField path="--hide" type="regex">
+  Remove frames matching this regex before analysis. Useful for collapsing uninteresting intermediate frames.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only).
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only).
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Callers Tree
+
+```bash
+ap-query callers profile.jfr -m HashMap.hash
+```
+
+```
+HashMap.hash (self=8.3%)
+  HashMap.put (6.8%)
+    UserService.cacheUser (3.2%)
+      UserService.processRequest (2.1%)
+      UserService.updateUser (1.1%)
+    SessionManager.putSession (2.4%)
+    ConfigLoader.loadConfig (1.2%)
+  HashMap.get (5.3%)
+    UserService.getUser (3.8%)
+    SessionManager.getSession (1.5%)
+```
+
+**Interpretation:**
+- `HashMap.hash` has 8.3% self-time
+- It's called by `HashMap.put` in 6.8% of samples
+- And by `HashMap.get` in 5.3% of samples
+- `HashMap.put` is called by `UserService.cacheUser`, `SessionManager.putSession`, etc.
+
+<Note>
+  Read the tree bottom-up: lower methods call higher methods. The indentation shows the call chain leading to your target method.
+</Note>
+
+### Deeper Callers Analysis
+
+```bash
+ap-query callers profile.jfr -m Arrays.copyOf --depth 8
+```
+
+Show 8 levels of callers instead of the default 4, going further up the call stack.
+
+### Hide Low-Percentage Callers
+
+```bash
+ap-query callers profile.jfr -m resize --min-pct 2.0
+```
+
+Only show caller paths that account for ≥ 2% of samples.
+
+### Remove Framework Frames
+
+```bash
+ap-query callers profile.jfr -m processRequest --hide "org\.springframework\..*"
+```
+
+Collapse Spring framework frames to focus on application-level callers.
+
+### Combined Analysis
+
+```bash
+ap-query callers profile.jfr -m validateInput --depth 6 --min-pct 1.5 --thread worker
+```
+
+Show 6 levels of callers, hide paths < 1.5%, only in worker threads.
+
+## Reading the Output
+
+Indentation shows inverted call hierarchy (read bottom-up):
+
+```
+A (self=8.3%)
+  B (6.8%)
+    C (3.2%)
+      D (2.1%)
+      E (1.1%)
+    F (2.4%)
+  G (5.3%)
+```
+
+This means:
+- A has 8.3% self-time (appears at top of stack)
+- B calls A in 6.8% of samples
+- C calls B (which calls A) in 3.2% of samples
+- D calls C→B→A in 2.1% of samples
+- E calls C→B→A in 1.1% of samples
+- F calls B→A in 2.4% of samples
+- G calls A directly in 5.3% of samples
+
+<Tip>
+  Use callers to answer "who is responsible for this method being hot?" The top-level callers are the entry points you might optimize.
+</Tip>
+
+## Multiple Matches
+
+If `-m` matches multiple methods, shows callers for each:
+
+```bash
+ap-query callers profile.jfr -m hash
+```
+
+```
+# matched 3 methods: HashMap.hash, String.hashCode, HashSet.hash
+
+HashMap.hash (self=8.3%)
+  HashMap.put (6.8%)
+    ...
+  HashMap.get (5.3%)
+    ...
+
+String.hashCode (self=5.1%)
+  HashMap.hash (3.2%)
+    ...
+  String.equals (1.9%)
+    ...
+
+HashSet.hash (self=1.8%)
+  HashSet.add (1.8%)
+    ...
+```
+
+## Understanding Caller Percentages
+
+The percentages represent how much each caller contributes to the target method:
+
+```
+HashMap.hash (self=8.3%)
+  HashMap.put (6.8%)
+  HashMap.get (1.5%)
+```
+
+- Total `HashMap.hash` self-time: 8.3%
+- 6.8% of samples came via `HashMap.put`
+- 1.5% of samples came via `HashMap.get`
+- 6.8% + 1.5% = 8.3% (full accounting)
+
+<Note>
+  Caller percentages should sum approximately to the target method's self%. Small discrepancies can occur due to rounding.
+</Note>
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Root Cause Analysis">
+    Understand why a hot method is called frequently
+  </Card>
+  
+  <Card title="Optimization Planning">
+    Identify high-level entry points to optimize rather than leaf methods
+  </Card>
+  
+  <Card title="Architecture Understanding">
+    See how different components use a common method
+  </Card>
+  
+  <Card title="Refactoring Guidance">
+    Find major callers to understand impact of changing a method
+  </Card>
+</CardGroup>
+
+## Callers vs Tree
+
+| Command | Direction | Shows | Use Case |
+|---------|-----------|-------|----------|
+| **callers** | Ascending (upward) | Who calls this | Why is this hot? |
+| **tree** | Descending (downward) | What this calls | What does this do? |
+
+Use them together for complete understanding:
+1. Find hot method with `hot`
+2. Use `tree` to see what it calls
+3. Use `callers` to see why it's called
+
+## Practical Example
+
+**Scenario:** `HashMap.resize` is hot (3.1% self-time)
+
+```bash
+ap-query callers profile.jfr -m HashMap.resize
+```
+
+```
+HashMap.resize (self=3.1%)
+  HashMap.putVal (3.1%)
+    HashMap.put (3.1%)
+      UserCache.put (2.8%)
+        UserService.cacheUser (2.8%)
+          UserService.processRequest (2.8%)
+```
+
+**Insight:** The resize calls are from `UserCache.put` during request processing. Optimization options:
+- Pre-size the HashMap in `UserCache` constructor
+- Use a different data structure
+- Reduce caching frequency
+
+## See Also
+
+- [`tree`](/commands/tree) - See what a method calls (opposite direction)
+- [`trace`](/commands/trace) - Follow the hottest path from a method downward
+- [`hot`](/commands/hot) - Find methods to investigate with callers

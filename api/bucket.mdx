@@ -1,0 +1,221 @@
+---
+title: 'Bucket'
+description: 'Time bucket from timeline analysis'
+---
+
+## Overview
+
+A `Bucket` represents a time slice from [`profile.timeline()`](/api/profile#timeline). Each bucket contains the stacks and samples that occurred within its time range.
+
+Buckets are only available for JFR profiles with per-sample timestamps.
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="1s")
+for b in buckets:
+    print(b.label + ": " + str(b.samples))
+```
+
+```
+0.0s-1.0s: 142
+1.0s-2.0s: 138
+2.0s-3.0s: 151
+```
+
+## Properties
+
+<ResponseField name="start" type="float">
+  Bucket start time in seconds from recording start.
+  
+  ```python
+  print(b.start)  # 5.0
+  ```
+</ResponseField>
+
+<ResponseField name="end" type="float">
+  Bucket end time in seconds from recording start.
+  
+  ```python
+  print(b.end)  # 6.0
+  ```
+</ResponseField>
+
+<ResponseField name="samples" type="int">
+  Total sample count in this bucket.
+  
+  ```python
+  print(b.samples)  # 142
+  ```
+</ResponseField>
+
+<ResponseField name="label" type="string">
+  Formatted time range label (e.g. `"5.0s-6.0s"` or `"4m20.0s-4m30.0s"`).
+  
+  ```python
+  print(b.label)  # "1.0s-2.0s"
+  ```
+</ResponseField>
+
+<ResponseField name="stacks" type="list[Stack]">
+  Stacks that occurred in this time bucket. Lazily built when accessed.
+  
+  ```python
+  for s in b.stacks:
+      if s.has("HashMap"):
+          print(s.leaf.name)
+  ```
+</ResponseField>
+
+<ResponseField name="profile" type="Profile">
+  Full `Profile` object wrapping this bucket's data. Supports all Profile methods like `filter()`, `hot()`, `tree()`, etc.
+  
+  ```python
+  # Analyze this time slice as a standalone profile
+  top = b.profile.hot(5)
+  filtered = b.profile.filter(lambda s: s.has("GC"))
+  ```
+</ResponseField>
+
+## Methods
+
+### hot()
+
+Return top methods for this bucket.
+
+```python
+hot(n=5, sort="self") → list[Method]
+```
+
+<ParamField path="n" type="int" default="5">
+  Number of methods to return.
+</ParamField>
+
+<ParamField path="sort" type="string" default="self">
+  Sort by `"self"` or `"total"`.
+</ParamField>
+
+**Returns:** List of `Method` objects.
+
+```python
+buckets = p.timeline(resolution="5s")
+for b in buckets:
+    print("\n" + b.label + ":")
+    for m in b.hot(3):
+        print("  " + rjust(round(m.self_pct, 1), 5) + "%  " + m.name)
+```
+
+```
+0.0s-5.0s:
+  28.3%  HashMap.resize
+  18.1%  String.indexOf
+  12.5%  System.arraycopy
+
+5.0s-10.0s:
+  31.2%  HashMap.get
+  22.4%  ThreadPoolExecutor.runWorker
+  10.8%  ByteBuffer.put
+```
+
+## Examples
+
+### Detect phase changes
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="10s")
+
+for b in buckets:
+    top = b.hot(1)
+    if len(top) > 0:
+        print(b.label + ": " + top[0].name + " (" + str(round(top[0].self_pct, 1)) + "%)")
+```
+
+### Compare first vs last bucket
+
+```python
+p = open("profile.jfr")
+buckets = p.timeline(resolution="5s")
+
+if len(buckets) >= 2:
+    first = buckets[0].profile
+    last = buckets[-1].profile
+    
+    d = diff(first, last)
+    print("Regressions from start to end:")
+    for e in d.regressions[:5]:
+        print("  " + e.name + " +" + str(round(e.delta, 1)) + "%")
+```
+
+### Find hottest time period
+
+```python
+buckets = p.timeline(buckets=20)
+hottest = max(buckets, key=lambda b: b.samples)
+
+print("Hottest period: " + hottest.label)
+print("Samples: " + str(hottest.samples))
+print("\nTop methods:")
+for m in hottest.hot(10):
+    print("  " + rjust(round(m.self_pct, 1), 5) + "%  " + m.name)
+```
+
+### Filter buckets by condition
+
+```python
+# Find time periods with high GC activity
+buckets = p.timeline(resolution="5s")
+for b in buckets:
+    gc_stacks = [s for s in b.stacks if s.has("GC")]
+    gc_samples = sum(s.samples for s in gc_stacks)
+    gc_pct = 100.0 * gc_samples / b.samples if b.samples > 0 else 0
+    
+    if gc_pct > 20.0:
+        print(b.label + ": GC " + str(round(gc_pct, 1)) + "%")
+```
+
+### Windowed diff
+
+```python
+# Compare consecutive 5s windows
+buckets = p.timeline(resolution="5s")
+for i in range(len(buckets) - 1):
+    d = diff(buckets[i].profile, buckets[i+1].profile)
+    if len(d.regressions) > 0:
+        print("\n" + buckets[i].label + " → " + buckets[i+1].label + ":")
+        for e in d.regressions[:3]:
+            print("  " + e.name + " +" + str(round(e.delta, 1)) + "%")
+```
+
+### Export bucket as standalone profile
+
+```python
+# Get the 10-15s window as a profile
+buckets = p.timeline(resolution="1s")
+target = buckets[10]  # 10s bucket
+
+# Use all Profile methods
+print(target.profile.summary())
+workers = target.profile.filter(lambda s: s.thread_has("worker"))
+print(target.profile.tree("HashMap.get"))
+```
+
+### Aggregate metrics across buckets
+
+```python
+buckets = p.timeline(resolution="1s")
+method_trends = {}
+
+for i, b in enumerate(buckets):
+    for m in b.hot():
+        if m.name not in method_trends:
+            method_trends[m.name] = []
+        method_trends[m.name].append((i, m.self_pct))
+
+# Find methods with increasing trend
+for name, data in method_trends.items():
+    if len(data) >= 5:
+        first_avg = sum(pct for _, pct in data[:3]) / 3
+        last_avg = sum(pct for _, pct in data[-3:]) / 3
+        if last_avg > first_avg * 1.5:
+            print(name + " increased: " + str(round(first_avg, 1)) + "% → " + str(round(last_avg, 1)) + "%")
+```

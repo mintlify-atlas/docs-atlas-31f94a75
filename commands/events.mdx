@@ -1,0 +1,266 @@
+---
+title: events
+description: List event types available in a profile
+---
+
+## Overview
+
+The `events` command inspects a JFR or pprof file and lists all available event types with their sample counts. This helps you:
+- Discover what was profiled in a recording
+- Choose the right event type for analysis
+- Verify profiler configuration
+
+<Note>
+This command requires structured profile formats (JFR or pprof). It does not work with collapsed text files.
+</Note>
+
+## Usage
+
+```bash
+ap-query events <file>
+```
+
+## Output Format
+
+Displays a table of available events:
+```
+EVENT       SAMPLES
+cpu          125430
+wall          89234
+alloc         45123
+lock           3421
+total        263208
+```
+
+Columns:
+- **EVENT**: Event type name
+- **SAMPLES**: Number of samples for this event
+
+The `total` row sums all event samples.
+
+Events are sorted by sample count (descending).
+
+## Examples
+
+### List Available Events
+
+```bash
+ap-query events profile.jfr
+```
+
+Output:
+```
+EVENT       SAMPLES
+cpu          125430
+wall          89234
+alloc         45123
+total        259787
+```
+
+### Check pprof Events
+
+```bash
+ap-query events cpu.pb.gz
+```
+
+Output:
+```
+EVENT       SAMPLES
+cpu           54321
+total         54321
+```
+
+### Verify Multi-Event Recording
+
+Check if async-profiler captured multiple event types:
+
+```bash
+ap-query events recording.jfr
+```
+
+Output:
+```
+EVENT       SAMPLES
+cpu          89234
+alloc        34521
+lock          2341
+total       126096
+```
+
+### Read from Stdin
+
+```bash
+cat profile.jfr | ap-query events -
+```
+
+## Supported Event Types
+
+Common async-profiler event types:
+
+- **cpu**: CPU time sampling (on-CPU methods)
+- **wall**: Wall-clock time (includes waiting/blocked)
+- **alloc**: Object allocation profiling
+- **lock**: Lock contention profiling
+- **cache-misses**: CPU cache misses (requires perf)
+- **page-faults**: Page fault events
+- **context-switches**: Context switch events
+- **cycles**, **instructions**: Hardware performance counters
+
+<Note>
+Hardware counter events (cache-misses, cycles, etc.) require Linux perf support and appropriate permissions.
+</Note>
+
+## Use Cases
+
+### Choose Analysis Event
+
+Before analyzing, see what's available:
+
+```bash
+ap-query events profile.jfr
+
+# Then analyze the desired event
+ap-query hot profile.jfr --event alloc
+```
+
+### Verify Profiler Configuration
+
+Confirm your profiler recorded the expected events:
+
+```bash
+# Started profiler with: -e cpu,alloc,lock
+ap-query events profile.jfr
+
+# Verify all three events appear
+```
+
+### Troubleshoot Missing Data
+
+If analysis seems empty, check if the expected event exists:
+
+```bash
+ap-query events profile.jfr
+# If 'alloc' is missing, you didn't enable allocation profiling
+```
+
+### Compare Recording Coverage
+
+See which events have the most data:
+
+```bash
+ap-query events profile.jfr
+```
+
+Output:
+```
+EVENT       SAMPLES
+cpu          125430  ← Rich CPU profile
+wall          89234  ← Good wall-clock coverage
+lock            142  ← Little lock contention detected
+```
+
+### Script Integration
+
+Check available events before automated analysis:
+
+```bash
+#!/bin/bash
+if ap-query events profile.jfr | grep -q "alloc"; then
+  echo "Analyzing allocations..."
+  ap-query hot profile.jfr --event alloc
+else
+  echo "No allocation data available"
+fi
+```
+
+## Event Types Explained
+
+### CPU vs Wall
+
+**CPU** events sample only when the thread is executing on CPU:
+- Shows computational hot spots
+- Excludes time spent waiting for I/O, locks, sleep
+- Best for finding CPU bottlenecks
+
+**Wall-clock** events sample at regular intervals regardless of state:
+- Shows total time including waiting
+- Reveals I/O waits, lock contention, thread parking
+- Best for understanding total latency
+
+### Allocation Profiling
+
+**alloc** events track object allocations:
+- Sample count = number of allocations, not bytes
+- High allocation rate → GC pressure
+- Use to find unnecessary allocations
+
+### Lock Contention
+
+**lock** events fire when threads block on monitors:
+- Shows which locks are contended
+- Low sample count is good (means little contention)
+- Use to find synchronization bottlenecks
+
+## No Events Found
+
+If you see:
+```
+no supported events found
+```
+
+Reasons:
+- Empty or corrupt profile file
+- Profile format not supported (use JFR or pprof)
+- Recording was started but not stopped (no samples captured)
+
+## Error Cases
+
+### Collapsed Text Input
+
+Error:
+```
+events command requires a JFR or pprof file
+```
+
+Collapsed text files don't contain event metadata. To check the event type, it's typically in the filename or you need to remember what was profiled.
+
+### Stdin Non-Structured
+
+Error:
+```
+events command requires a JFR or pprof file (stdin appears to be collapsed text)
+```
+
+You piped collapsed text to `events`. This command needs structured formats:
+
+```bash
+# Wrong
+ap-query collapse profile.jfr | ap-query events -
+
+# Right
+ap-query events profile.jfr
+```
+
+## Tips
+
+<Tip>
+**Default event**: When you don't specify `--event`, most commands default to `cpu`. Use `events` to see what else is available.
+</Tip>
+
+<Tip>
+**Multi-event profiling**: Record multiple events in one session with async-profiler:
+```bash
+java -agentpath:libasyncProfiler.so=start,event=cpu,event=alloc,file=profile.jfr MyApp
+```
+Then use `events` to verify both were captured.
+</Tip>
+
+<Tip>
+**Sampling rates**: Events with very low sample counts may indicate short recording duration or infrequent occurrence. Consider longer profiling or higher sample rates.
+</Tip>
+
+## See Also
+
+- [hot](/commands/hot) - Analyze specific event types
+- [diff](/commands/diff) - Compare event types with `--event`
+- [script](/commands/script) - Access event list via `Profile.events`

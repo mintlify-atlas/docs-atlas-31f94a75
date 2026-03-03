@@ -1,0 +1,207 @@
+---
+title: info
+description: One-shot triage showing events, threads, hot methods, and automatic drill-down
+---
+
+The `info` command provides a comprehensive, multi-section overview of a profile in a single command. It's designed for quick triage and initial investigation.
+
+## Usage
+
+```bash
+ap-query info <file> [flags]
+```
+
+## What It Shows
+
+`info` combines multiple analysis views:
+
+1. **Duration & samples** - Recording span and sample count
+2. **CPU vs WALL comparison** - Thread group activity across event types (when both present)
+3. **Thread distribution** - Top threads by sample count
+4. **Hot methods** - Dual-ranked tables (self-time and total-time)
+5. **Automatic drill-down** - For top hot methods:
+   - Call tree (callees)
+   - Callers tree
+   - Line number distribution
+6. **Available events** - Other event types in the file
+
+## Flags
+
+<ParamField path="--expand" type="int" default="3">
+  Auto-expand top N hot methods with drill-down sections (tree, callers, lines). Set to `0` to disable drill-down.
+</ParamField>
+
+<ParamField path="--top-threads" type="int" default="10">
+  Number of threads to show. Set to `0` to show all threads.
+</ParamField>
+
+<ParamField path="--top-methods" type="int" default="20">
+  Number of hot methods to show in ranking tables. Set to `0` to show all methods.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only). Examples: `5s`, `1m30s`, `2m`.
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only). Examples: `10s`, `2m`, `1m30s`.
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Triage
+
+```bash
+ap-query info profile.jfr
+```
+
+```
+Duration: 1m0.0s  Samples: 12043 (cpu)
+
+=== CPU vs WALL ===
+GROUP (threads)                   CPU%    WALL%
+http-nio-exec (24)               78.3%   45.2%
+Scheduled (4)                    12.1%   18.7%
+GC Thread (8)                     8.2%    2.4%
+
+=== THREADS (top 10) ===
+http-nio-8080-exec-1             1824   15.1%
+http-nio-8080-exec-2             1653   13.7%
+ScheduledExecutor-1               892    7.4%
+GC Thread#0                       543    4.5%
+...
+
+=== RANK BY SELF TIME (top 20) ===
+METHOD                                              SELF%   TOTAL%   SAMPLES
+HashMap.hash                                         8.3%   12.1%       998
+ArrayList.grow                                       6.2%    6.2%       747
+String.hashCode                                      5.1%    8.9%       614
+...
+
+=== RANK BY TOTAL TIME (top 20) ===
+METHOD                                              SELF%   TOTAL%   SAMPLES
+UserService.processRequest                           2.1%   45.3%      5456
+HashMap.hash                                         8.3%   12.1%       998
+...
+
+Total samples: 12043
+
+=== DRILL-DOWN: HashMap.hash (self=8.3%) ===
+--- tree (callees) ---
+HashMap.hash (total=12.1%, self=8.3%)
+  HashMap.putVal (3.2%)
+    HashMap.resize (2.1%)
+  ...
+
+--- callers ---
+HashMap.hash (self=8.3%)
+  HashMap.put (6.8%)
+  HashMap.get (5.3%)
+  ...
+
+--- lines ---
+HashMap.java:338         456    3.8%
+HashMap.java:342         312    2.6%
+...
+
+Also available: wall, alloc
+```
+
+### Focus on Specific Thread
+
+```bash
+ap-query info profile.jfr --thread worker
+```
+
+### Minimal Drill-Down
+
+```bash
+ap-query info profile.jfr --expand 1 --top-methods 10
+```
+
+Shows only top 10 hot methods with drill-down for just the #1 hottest method.
+
+### Disable Drill-Down
+
+```bash
+ap-query info profile.jfr --expand 0
+```
+
+Skips all drill-down sections (tree, callers, lines).
+
+### Time Window Analysis
+
+```bash
+ap-query info profile.jfr --from 30s --to 1m
+```
+
+Analyze only samples between 30 seconds and 1 minute into the recording.
+
+## Output Sections
+
+### CPU vs WALL
+
+Shown when both `cpu` and `wall` events are present. Groups threads by pattern and shows percentage in each event type.
+
+<Tip>
+  High CPU% + High WALL% = CPU-bound work  
+  Low CPU% + High WALL% = Waiting/blocking I/O  
+  High CPU% + Low WALL% = Rare but possible with certain workloads
+</Tip>
+
+### Threads
+
+Lists individual threads by sample count. Thread names come from JFR metadata.
+
+### Hot Methods
+
+Two tables ranked differently:
+- **SELF TIME**: Methods that appear at the top of stacks (doing actual work)
+- **TOTAL TIME**: Methods that appear anywhere in stacks (orchestrating work)
+
+### Drill-Down
+
+<Note>
+  Drill-down depth is fixed at 3 levels for tree and callers, 5 lines for line numbers. Use dedicated commands (`tree`, `callers`, `lines`) for deeper analysis.
+</Note>
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Initial Investigation">
+    First look at a new profile to understand high-level patterns
+  </Card>
+  
+  <Card title="Quick Triage">
+    Rapidly assess performance characteristics without running multiple commands
+  </Card>
+  
+  <Card title="Cross-Event Comparison">
+    Compare CPU and wall-clock time to identify blocking vs compute
+  </Card>
+  
+  <Card title="Thread Analysis">
+    See which threads are active and what they're doing
+  </Card>
+</CardGroup>
+
+## See Also
+
+- [`hot`](/commands/hot) - Detailed hot method ranking with more options
+- [`threads`](/commands/threads) - Thread analysis with grouping
+- [`tree`](/commands/tree) - Deep call tree analysis
+- [`callers`](/commands/callers) - Deep caller analysis

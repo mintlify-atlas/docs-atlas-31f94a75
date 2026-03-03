@@ -1,0 +1,425 @@
+---
+title: 'Global Functions'
+description: 'Global utility functions available in ap-query scripts'
+---
+
+## Profile Operations
+
+### open()
+
+Load a profile from a file.
+
+```python
+open(path, event="cpu", start="", end="", thread="") → Profile
+```
+
+<ParamField path="path" type="string" required>
+  Path to profile file. Supports:
+  - JFR: `.jfr`, `.jfr.gz`
+  - pprof: `.pb`, `.pb.gz`
+  - Collapsed text: any other extension
+  - Stdin: use `"-"`
+</ParamField>
+
+<ParamField path="event" type="string" default="cpu">
+  Event type to load: `"cpu"`, `"wall"`, `"alloc"`, or `"lock"`. For formats without event metadata (collapsed text), this is used as the label.
+</ParamField>
+
+<ParamField path="start" type="string" default="">
+  **JFR only.** Window start time. Go duration syntax: `"5s"`, `"1m30s"`. Times are relative to recording start.
+</ParamField>
+
+<ParamField path="end" type="string" default="">
+  **JFR only.** Window end time. Go duration syntax.
+</ParamField>
+
+<ParamField path="thread" type="string" default="">
+  Filter to stacks with thread names containing this substring.
+</ParamField>
+
+**Returns:** [`Profile`](/api/profile) object.
+
+**Examples:**
+
+```python
+# Load JFR
+p = open("profile.jfr")
+
+# Load specific event type
+p = open("multi.jfr", event="wall")
+
+# Time window (JFR only)
+p = open("profile.jfr", start="5s", end="10s")
+
+# Filter by thread
+p = open("profile.jfr", thread="worker")
+
+# Load from stdin
+p = open("-")
+
+# pprof (same API)
+p = open("cpu.pb.gz")
+
+# Collapsed text
+p = open("perf.collapsed")
+```
+
+<Warning>
+  `start` and `end` are not supported for pprof or collapsed text (no per-sample timestamps).
+</Warning>
+
+### diff()
+
+Compare two profiles by self%.
+
+```python
+diff(a, b, min_delta=0.5, top=0, fqn=False) → Diff
+```
+
+<ParamField path="a" type="Profile" required>
+  First profile ("before").
+</ParamField>
+
+<ParamField path="b" type="Profile" required>
+  Second profile ("after").
+</ParamField>
+
+<ParamField path="min_delta" type="float" default="0.5">
+  Minimum percentage point change to include in results.
+</ParamField>
+
+<ParamField path="top" type="int" default="0">
+  Limit entries per category (regressions, improvements, etc.). `0` = unlimited.
+</ParamField>
+
+<ParamField path="fqn" type="bool" default="False">
+  Use fully-qualified names. Changes aggregation granularity.
+</ParamField>
+
+**Returns:** `Diff` object with:
+- `.regressions` - Methods with increased self% (sorted by delta descending)
+- `.improvements` - Methods with decreased self% (sorted by delta ascending)
+- `.added` - Methods only in second profile
+- `.removed` - Methods only in first profile
+- `.all` - All entries sorted by absolute delta descending
+
+Each category is a `list[DiffEntry]` where each entry has:
+- `.name` - Method name (string)
+- `.fqn` - Fully-qualified name (string)
+- `.before` - Self% in first profile (float)
+- `.after` - Self% in second profile (float)
+- `.delta` - Change in percentage points (float)
+
+**Examples:**
+
+```python
+# Compare two profiles
+before = open("baseline.jfr")
+after = open("optimized.jfr")
+d = diff(before, after)
+
+print("Regressions:")
+for e in d.regressions:
+    print("  " + e.name + ": " + str(round(e.before, 1)) + "% → " + 
+          str(round(e.after, 1)) + "% (+" + str(round(e.delta, 1)) + "%)")
+
+print("\nImprovements:")
+for e in d.improvements:
+    print("  " + e.name + ": " + str(round(e.before, 1)) + "% → " + 
+          str(round(e.after, 1)) + "% (" + str(round(e.delta, 1)) + "%)")
+```
+
+```python
+# Compare time windows within a single recording
+p = open("profile.jfr")
+parts = p.split([30.0])  # Split at 30s
+d = diff(parts[0], parts[1])
+```
+
+```python
+# Compare first vs last timeline bucket
+buckets = p.timeline(resolution="10s")
+if len(buckets) >= 2:
+    d = diff(buckets[0].profile, buckets[-1].profile, min_delta=1.0)
+```
+
+## Output Functions
+
+### emit()
+
+Write a single stack in collapsed format to stdout.
+
+```python
+emit(stack)
+```
+
+<ParamField path="stack" type="Stack" required>
+  Stack to emit.
+</ParamField>
+
+Output format: `[thread];frame1;frame2;... count`
+
+```python
+for s in p.stacks:
+    if s.has("HashMap"):
+        emit(s)
+```
+
+Output:
+```
+[worker-1];Thread.run;Server.handle;HashMap.put 42
+[worker-2];Thread.run;Server.handle;HashMap.get 38
+```
+
+Pipe to `ap-query hot` for visualization:
+
+```bash
+ap-query script filter.star | ap-query hot -
+```
+
+### emit_all()
+
+Write all stacks from a profile in collapsed format.
+
+```python
+emit_all(profile)
+```
+
+<ParamField path="profile" type="Profile" required>
+  Profile to emit.
+</ParamField>
+
+```python
+filtered = p.filter(lambda s: s.has("HashMap"))
+emit_all(filtered)
+```
+
+### fail()
+
+Print message to stderr and exit with code 1.
+
+```python
+fail(msg)
+```
+
+<ParamField path="msg" type="string" required>
+  Error message to print.
+</ParamField>
+
+Useful for CI checks:
+
+```python
+p = open("profile.jfr")
+gc = p.filter(lambda s: s.has("GC"))
+gc_pct = 100.0 * gc.samples / p.samples
+
+if gc_pct > 15.0:
+    fail("GC overhead too high: " + str(round(gc_pct, 1)) + "%")
+```
+
+### warn()
+
+Print message to stderr and continue.
+
+```python
+warn(msg)
+```
+
+<ParamField path="msg" type="string" required>
+  Warning message to print.
+</ParamField>
+
+```python
+if p.duration == 0:
+    warn("Duration unavailable, percentages may be inaccurate")
+```
+
+## String Functions
+
+### round()
+
+Round a float to specified decimal places.
+
+```python
+round(x, decimals=0) → float
+```
+
+<ParamField path="x" type="float" required>
+  Number to round.
+</ParamField>
+
+<ParamField path="decimals" type="int" default="0">
+  Number of decimal places (0-15).
+</ParamField>
+
+```python
+print(round(12.3456, 2))  # 12.35
+print(round(12.3456, 0))  # 12.0
+print(round(12.5))        # 13.0
+```
+
+<Info>
+  Starlark's `%f` format specifier doesn't support precision modifiers like `%.2f`. Use `round()` instead.
+</Info>
+
+### ljust()
+
+Left-justify a value with spaces (pad right).
+
+```python
+ljust(value, width) → string
+```
+
+<ParamField path="value" type="any" required>
+  Value to justify. Automatically converted to string.
+</ParamField>
+
+<ParamField path="width" type="int" required>
+  Minimum width in characters. If value is already wider, returned unchanged.
+</ParamField>
+
+```python
+print(ljust("hello", 10) + "|")  # "hello     |"
+print(ljust(42, 8) + "|")        # "42      |"
+print(ljust("toolong", 3))       # "toolong" (unchanged)
+```
+
+**Table formatting:**
+
+```python
+for m in p.hot(10):
+    print(ljust(m.name, 40) + rjust(round(m.self_pct, 1), 6) + "%")
+```
+
+```
+HashMap.resize                           23.5%
+ThreadPoolExecutor.runWorker             18.2%
+String.indexOf                           12.1%
+```
+
+### rjust()
+
+Right-justify a value with spaces (pad left).
+
+```python
+rjust(value, width) → string
+```
+
+<ParamField path="value" type="any" required>
+  Value to justify. Automatically converted to string.
+</ParamField>
+
+<ParamField path="width" type="int" required>
+  Minimum width in characters.
+</ParamField>
+
+```python
+print(rjust("hello", 10))  # "     hello"
+print(rjust(42, 6))        # "    42"
+```
+
+**Numeric alignment:**
+
+```python
+for m in p.hot(5):
+    print(rjust(str(m.self), 8) + "  " + m.name)
+```
+
+```
+     423  HashMap.resize
+     312  String.indexOf
+     201  System.arraycopy
+```
+
+## Utility Functions
+
+### match()
+
+Match a string against a regular expression (RE2 syntax).
+
+```python
+match(string, pattern) → bool
+```
+
+<ParamField path="string" type="string" required>
+  String to test.
+</ParamField>
+
+<ParamField path="pattern" type="string" required>
+  RE2 regex pattern.
+</ParamField>
+
+```python
+if match("com.example.Service", "^com\\.example\\."):
+    print("Match")
+
+# Filter with regex
+filtered = p.filter(lambda s: any(match(f.name, "Hash.*") for f in s.frames))
+```
+
+<Info>
+  For simple substring matching, use Python's `in` operator or [`stack.has()`](/api/stack#has):
+  
+  ```python
+  if "HashMap" in frame.name:  # Substring
+  if s.has("HashMap"):          # Stack frame match
+  ```
+</Info>
+
+## Duration Parsing
+
+Duration strings use Go syntax:
+
+- `"5s"` - 5 seconds
+- `"1m30s"` - 1 minute 30 seconds
+- `"2h"` - 2 hours
+- `"500ms"` - 500 milliseconds
+
+Used in:
+- `open(start=..., end=...)`
+- `timeline(resolution=...)`
+- `split([...])`
+
+```python
+# All equivalent to 5 seconds
+open("profile.jfr", start="5s")
+open("profile.jfr", start="5000ms")
+timeline(resolution="5s")
+split([5.0, "10s", "1m"])
+```
+
+## Built-in Functions
+
+Starlark provides these built-ins (no import needed):
+
+- `len(x)` - Length of list/dict/string
+- `sorted(list, key=None, reverse=False)` - Sort a list
+- `enumerate(list)` - Iterate with index: `for i, item in enumerate(list)`
+- `range(n)` / `range(start, end, step)` - Generate numeric ranges
+- `str(x)`, `int(x)`, `float(x)` - Type conversions
+- `list(x)`, `dict(x)` - Create collections
+- `type(x)` - Get type name as string
+- `hasattr(obj, name)` - Check if attribute exists
+- `min(...)`, `max(...)`, `abs(x)` - Numeric operations
+- `zip(a, b)` - Iterate pairs
+- `any(list)`, `all(list)` - Boolean aggregates
+- `repr(x)` - Representation string
+- `reversed(list)` - Reverse iteration
+
+### Examples
+
+```python
+# Find max sample count
+max_samples = max(s.samples for s in p.stacks)
+
+# Sort methods by name
+methods = sorted(p.hot(), key=lambda m: m.name)
+
+# Enumerate with index
+for i, m in enumerate(p.hot(10)):
+    print(str(i+1) + ". " + m.name)
+
+# Type checking
+if type(value) == "int":
+    print("Integer: " + str(value))
+```

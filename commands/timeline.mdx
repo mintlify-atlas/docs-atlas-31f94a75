@@ -1,0 +1,329 @@
+---
+title: timeline
+description: Sample distribution over time (JFR only)
+---
+
+The `timeline` command visualizes how samples are distributed over time, showing temporal patterns, peaks, and trends. It requires JFR input (pprof and collapsed formats lack timestamps).
+
+## Usage
+
+```bash
+ap-query timeline <file> [flags]
+```
+
+<Warning>
+  Timeline only works with JFR files (`.jfr`, `.jfr.gz`). Pprof and collapsed-stack formats don't have per-sample timestamps.
+</Warning>
+
+## What It Shows
+
+A time-bucketed view showing:
+- Time ranges for each bucket
+- Sample count or percentage per bucket
+- ASCII bar chart for visualization
+- Optional hot method annotation per bucket
+- Peak detection (buckets > 2× median)
+
+## Flags
+
+<ParamField path="--buckets" type="int" default="0">
+  Number of time buckets. Default `0` means auto (~20 buckets, clamped to 5-40). Cannot be used with `--resolution`.
+</ParamField>
+
+<ParamField path="--resolution" type="duration">
+  Fixed bucket width (e.g., `1s`, `500ms`, `100ms`). Cannot be used with `--buckets`.
+  
+  Examples: `1s`, `500ms`, `100ms`, `2s`
+</ParamField>
+
+<ParamField path="-m, --method" type="string">
+  Only count samples containing this method (substring match). When specified, shows what percentage of each bucket contains the method.
+</ParamField>
+
+<ParamField path="--pct" type="boolean">
+  Show method percentage per bucket instead of absolute counts. Requires `--method`.
+</ParamField>
+
+<ParamField path="--no-top-method" type="boolean">
+  Omit per-bucket hot method annotation. Speeds up output for large profiles.
+</ParamField>
+
+<ParamField path="--top" type="int" default="0">
+  Show only the N highest-sample buckets. Default `0` means show all buckets.
+</ParamField>
+
+<ParamField path="--compare" type="string">
+  Compare two events as a ratio: `cpu,wall` or `wall,cpu`. Shows CPU/WALL ratio per bucket.
+  
+  Incompatible with: `--event`, `--method`, `--pct`, `--hide`, `--top`, `--no-top-method`
+</ParamField>
+
+<ParamField path="--hide" type="regex">
+  Remove frames matching this regex before analysis. Affects hot method detection.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name. Not usable with `--compare`.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window. Examples: `5s`, `1m30s`, `2m`.
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window. Examples: `10s`, `2m`, `1m30s`.
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Timeline
+
+```bash
+ap-query timeline profile.jfr
+```
+
+```
+Duration: 1m0.0s  Buckets: 20 (3s each)  Event: cpu  Total: 12043
+
+Time                 Samples  
+0.0s-3.0s               423  ████████████████████████            HashMap.hash (32%)
+3.0s-6.0s               512  ████████████████████████████████    ArrayList.grow (28%)
+6.0s-9.0s               489  ███████████████████████████████     String.hashCode (25%)
+9.0s-12.0s              678  ██████████████████████████████████████████  <- peak  HashMap.resize (35%)
+12.0s-15.0s             445  ███████████████████████████         UserService.validate (22%)
+15.0s-18.0s             398  ████████████████████████            JSONParser.parse (29%)
+...
+```
+
+<Note>
+  The bar length is scaled to the maximum bucket. Peak detection highlights buckets > 2× median.
+</Note>
+
+### Fixed Resolution
+
+```bash
+ap-query timeline profile.jfr --resolution 1s
+```
+
+Create buckets exactly 1 second wide regardless of total duration.
+
+### Specific Bucket Count
+
+```bash
+ap-query timeline profile.jfr --buckets 40
+```
+
+Divide the timeline into exactly 40 buckets.
+
+### Method Timeline
+
+```bash
+ap-query timeline profile.jfr --method HashMap.get
+```
+
+```
+Duration: 1m0.0s  Buckets: 20 (3s each)  Event: cpu  Matched: 2456/12043
+
+Time                 Samples  
+0.0s-3.0s               134  ████████████████████████
+3.0s-6.0s               156  ████████████████████████████
+6.0s-9.0s               189  █████████████████████████████████  HashMap.get (78%)
+...
+```
+
+Shows only samples containing `HashMap.get`, with hot method annotation showing self%.
+
+### Method Percentage Per Bucket
+
+```bash
+ap-query timeline profile.jfr --method HashMap.get --pct
+```
+
+```
+Duration: 1m0.0s  Buckets: 20 (3s each)  Event: cpu  Matched: 2456/12043
+
+Time                     Pct  
+0.0s-3.0s              31.7%  ████████████████████████
+3.0s-6.0s              30.5%  ███████████████████████
+6.0s-9.0s              38.7%  ██████████████████████████████
+9.0s-12.0s             42.3%  █████████████████████████████████  <- peak
+...
+```
+
+Shows what percentage of each bucket contains the method.
+
+### Top Buckets Only
+
+```bash
+ap-query timeline profile.jfr --top 5
+```
+
+Show only the 5 highest-sample buckets (sorted by time, not sample count).
+
+### Compare CPU and Wall
+
+```bash
+ap-query timeline profile.jfr --compare cpu,wall
+```
+
+```
+Duration: 1m0.0s  Buckets: 20 (3s each)  Compare: cpu/wall  Total: cpu=12043 wall=24567
+
+Time                      CPU     WALL  CPU/WALL
+0.0s-3.0s                 423      892      0.47
+3.0s-6.0s                 512     1034      0.50
+6.0s-9.0s                 489     1245      0.39
+9.0s-12.0s                678      721      0.94
+...
+```
+
+<Tip>
+  CPU/WALL ratio < 0.5 suggests high blocking/waiting. Ratio close to 1.0 suggests CPU-bound work.
+</Tip>
+
+### Thread-Specific Timeline
+
+```bash
+ap-query timeline profile.jfr --thread worker --resolution 500ms
+```
+
+Analyze only worker threads with 500ms resolution.
+
+### Time Window Timeline
+
+```bash
+ap-query timeline profile.jfr --from 30s --to 1m
+```
+
+Create timeline for the 30s-60s window only.
+
+### Disable Hot Method Annotation
+
+```bash
+ap-query timeline profile.jfr --no-top-method
+```
+
+Skip per-bucket hot method detection (faster for large profiles).
+
+## Reading the Output
+
+### Header
+
+```
+Duration: 1m0.0s  Buckets: 20 (3s each)  Event: cpu  Total: 12043
+```
+
+- Total recording duration
+- Number of buckets and width of each
+- Event type being analyzed
+- Total sample count
+
+### Timeline Rows
+
+```
+9.0s-12.0s    678  ██████████████████████████████████████████  <- peak  HashMap.resize (35%)
+```
+
+- **9.0s-12.0s**: Time range for this bucket
+- **678**: Sample count in this bucket
+- **Bar**: ASCII visualization (scaled to max bucket)
+- **&lt;- peak**: Annotation for buckets > 2× median
+- **HashMap.resize (35%)**: Hottest method in this bucket with self%
+
+### Compare Mode
+
+```
+9.0s-12.0s    678     721      0.94
+```
+
+- **678**: CPU samples in this bucket
+- **721**: Wall samples in this bucket
+- **0.94**: CPU/WALL ratio
+
+## Use Cases
+
+<CardGroup cols={2}>
+  <Card title="Identifying Spikes">
+    Find sudden increases in CPU/memory usage
+  </Card>
+  
+  <Card title="Warmup Analysis">
+    See how performance changes from start to steady-state
+  </Card>
+  
+  <Card title="Periodic Patterns">
+    Detect repeated spikes (GC, scheduled tasks, etc.)
+  </Card>
+  
+  <Card title="Regression Pinpointing">
+    Narrow down when a performance issue started
+  </Card>
+  
+  <Card title="CPU vs Wall Comparison">
+    Find time periods with high blocking
+  </Card>
+  
+  <Card title="Method Evolution">
+    See how a method's impact changes over time
+  </Card>
+</CardGroup>
+
+## Practical Examples
+
+### Find When a Method Got Hot
+
+```bash
+ap-query timeline profile.jfr --method HashMap.resize --pct
+```
+
+See which time buckets have high percentages of this method.
+
+### Analyze Startup vs Steady-State
+
+```bash
+ap-query timeline profile.jfr --to 10s
+ap-query timeline profile.jfr --from 10s
+```
+
+Compare first 10 seconds vs the rest.
+
+### Detect GC Storms
+
+```bash
+ap-query timeline profile.jfr --thread "GC Thread" --resolution 1s
+```
+
+Visualize GC activity over time.
+
+### Find Blocking Periods
+
+```bash
+ap-query timeline profile.jfr --compare cpu,wall --resolution 500ms
+```
+
+Low CPU/WALL ratios indicate blocking.
+
+## Limitations
+
+<Warning>
+  - Requires JFR input (no pprof or collapsed support)
+  - Maximum 10,000 buckets to prevent excessive output
+  - Very fine resolutions may produce sparse buckets
+  - Timeline data requires JFR recording with timestamps enabled
+</Warning>
+
+## See Also
+
+- [`info`](/commands/info) - Overview including duration and sample count
+- [`hot`](/commands/hot) - Find hot methods to trace over time
+- [`threads`](/commands/threads) - Thread distribution (combine with timeline filtering)

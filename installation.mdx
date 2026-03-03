@@ -1,0 +1,226 @@
+---
+title: Installation
+description: Install ap-query and set up agent integration
+---
+
+## Install ap-query
+
+The fastest way to install ap-query is using the install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jerrinot/ap-query/master/install.sh | sh
+```
+
+This downloads the latest release binary for your platform and installs it to `/usr/local/bin/ap-query` (or `~/.local/bin/ap-query` if you don't have sudo access).
+
+<Tip>
+  After installation, verify it works:
+  ```bash
+  ap-query version
+  ```
+</Tip>
+
+### Alternative installation methods
+
+<AccordionGroup>
+  <Accordion title="Install via go install">
+    If you have Go 1.23+ installed:
+    ```bash
+    go install github.com/jerrinot/ap-query@latest
+    ```
+    The binary will be installed to `$GOPATH/bin/ap-query` (usually `~/go/bin/ap-query`).
+  </Accordion>
+  
+  <Accordion title="Manual binary download">
+    Download the latest release from [GitHub Releases](https://github.com/jerrinot/ap-query/releases/latest):
+    
+    1. Download the appropriate archive for your platform:
+       - Linux x64: `ap-query_linux_amd64.tar.gz`
+       - Linux ARM64: `ap-query_linux_arm64.tar.gz`
+       - macOS: `ap-query_darwin_amd64.tar.gz` or `ap-query_darwin_arm64.tar.gz`
+    
+    2. Extract and move to your PATH:
+       ```bash
+       tar -xzf ap-query_*.tar.gz
+       sudo mv ap-query /usr/local/bin/
+       ```
+  </Accordion>
+</AccordionGroup>
+
+## Install async-profiler
+
+ap-query analyzes profiles created by [async-profiler](https://github.com/async-profiler/async-profiler). You'll need to install async-profiler to capture profiles.
+
+<Steps>
+  <Step title="Download async-profiler">
+    The easiest way is to let `ap-query init` handle this automatically (see next section). Alternatively, download it manually:
+    
+    **Linux:**
+    ```bash
+    wget https://github.com/async-profiler/async-profiler/releases/latest/download/async-profiler-3.0-linux-x64.tar.gz
+    tar -xzf async-profiler-3.0-linux-x64.tar.gz
+    sudo mv async-profiler-3.0-linux-x64 /opt/async-profiler
+    ```
+    
+    **macOS:**
+    ```bash
+    wget https://github.com/async-profiler/async-profiler/releases/latest/download/async-profiler-3.0-macos.zip
+    unzip async-profiler-3.0-macos.zip
+    sudo mv async-profiler-3.0-macos /opt/async-profiler
+    ```
+  </Step>
+  
+  <Step title="Add to PATH">
+    Add the `bin` directory to your PATH:
+    ```bash
+    export PATH="/opt/async-profiler/bin:$PATH"
+    ```
+    Add this line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to make it permanent.
+  </Step>
+  
+  <Step title="Verify installation">
+    ```bash
+    asprof --version
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  async-profiler requires Linux perf events or macOS DTrace. On Linux, you may need to adjust kernel settings:
+  ```bash
+  # Allow non-root users to profile
+  sudo sysctl kernel.perf_event_paranoid=1
+  sudo sysctl kernel.kptr_restrict=0
+  ```
+  See the [async-profiler documentation](https://github.com/async-profiler/async-profiler#basic-usage) for details.
+</Note>
+
+## Install agent skill
+
+The agent skill teaches coding agents (Claude Code, Codex, etc.) how to profile Java applications and analyze results with ap-query.
+
+<Steps>
+  <Step title="Run ap-query init">
+    Run the init command to install the agent skill:
+    
+    ```bash
+    # Global installation (recommended)
+    ap-query init
+    ```
+    
+    This command:
+    - Auto-detects your `asprof` installation (or offers to download it)
+    - Detects which agents you use (Claude Code, Codex)
+    - Installs the skill to the appropriate directories
+    - Embeds the exact paths to `asprof` and `ap-query` on your system
+  </Step>
+  
+  <Step title="Verify skill installation">
+    The skill will be installed to one or both of these locations:
+    
+    - **Claude Code (global)**: `~/.claude/skills/jfr/SKILL.md`
+    - **Codex (global)**: `~/.codex/skills/jfr/SKILL.md` (or `$CODEX_HOME/skills/jfr/SKILL.md`)
+    
+    Verify the skill file exists:
+    ```bash
+    ls -l ~/.claude/skills/jfr/SKILL.md
+    ```
+  </Step>
+  
+  <Step title="Test with your agent">
+    Ask your agent to profile something:
+    
+    > "Profile this Java program with async-profiler and analyze the result with ap-query. Start with hotspot triage."
+    
+    The agent should automatically use the skill to run the correct commands.
+  </Step>
+</Steps>
+
+### Installation modes
+
+ap-query init supports two installation modes:
+
+<Tabs>
+  <Tab title="Global (recommended)">
+    Global installation makes the skill available to all projects:
+    
+    ```bash
+    ap-query init
+    ```
+    
+    - **Claude Code**: Installs to `~/.claude/skills/jfr/`
+    - **Codex**: Installs to `~/.codex/skills/jfr/` (or `$CODEX_HOME/skills/jfr/`)
+  </Tab>
+  
+  <Tab title="Project-local">
+    Project-local installation limits the skill to the current directory:
+    
+    ```bash
+    ap-query init --project
+    ```
+    
+    - **Claude Code**: Installs to `.claude/skills/jfr/`
+    - **Codex**: Installs to `.agents/skills/jfr/`
+    
+    Useful for team projects where everyone needs consistent profiling workflows.
+  </Tab>
+</Tabs>
+
+### Advanced init options
+
+<ParamField path="--asprof PATH" type="string">
+  Explicit path to the `asprof` binary. Skips auto-detection.
+  ```bash
+  ap-query init --asprof /opt/async-profiler/bin/asprof
+  ```
+</ParamField>
+
+<ParamField path="--project" type="boolean">
+  Install to the current directory instead of home directory.
+</ParamField>
+
+<ParamField path="--force" type="boolean">
+  Overwrite existing skill files.
+</ParamField>
+
+<ParamField path="--claude" type="boolean">
+  Install only for Claude Code (creates `.claude` if needed).
+</ParamField>
+
+<ParamField path="--codex" type="boolean">
+  Install only for Codex (creates `.codex` or `.agents` if needed).
+</ParamField>
+
+<ParamField path="--stdout" type="boolean">
+  Print the rendered skill to stdout instead of installing. Useful for custom agents or debugging.
+</ParamField>
+
+## Updating ap-query
+
+ap-query can self-update to the latest release:
+
+```bash
+ap-query update
+```
+
+This command:
+1. Checks for the latest GitHub release
+2. Downloads and verifies the new binary
+3. Replaces the current binary atomically
+4. Auto-updates any globally installed agent skills
+
+<Note>
+  If you installed via `go install`, use `go install github.com/jerrinot/ap-query@latest` instead.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Profile and analyze your first application
+  </Card>
+  
+  <Card title="Agent Integration Guide" icon="robot" href="/guides/agent-integration">
+    Learn how agents use the skill
+  </Card>
+</CardGroup>

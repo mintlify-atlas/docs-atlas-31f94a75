@@ -1,0 +1,553 @@
+---
+title: CI Integration
+description: Integrate ap-query into CI pipelines for automated performance testing
+---
+
+## Overview
+
+Integrate ap-query into CI/CD pipelines to:
+- **Detect regressions** before they reach production
+- **Enforce performance budgets** per method
+- **Automate profiling** in test environments
+- **Fail builds** when thresholds are exceeded
+
+ap-query provides exit codes and assertion flags designed for CI workflows.
+
+## Quick Start
+
+### Basic CI Gate
+
+```bash
+#!/bin/bash
+# Record profile during load test
+asprof -d 30 -o jfr -f profile.jfr $PID
+
+# Fail if top method >= 15%
+ap-query hot profile.jfr --assert-below 15.0
+
+if [ $? -ne 0 ]; then
+  echo "Performance regression detected!"
+  exit 1
+fi
+```
+
+Exit codes:
+- **0**: Assertion passed
+- **1**: Assertion failed (method ≥ threshold)
+
+<Tip>
+  Use `--assert-below` to enforce that no single method dominates the profile.
+</Tip>
+
+## Exit Codes
+
+ap-query uses exit codes to signal CI status:
+
+| Exit Code | Meaning |
+|-----------|----------|
+| `0` | Success (no errors, assertions passed) |
+| `1` | Failure (error, assertion failed) |
+| `2` | Invalid usage (bad flags, syntax error) |
+
+### Commands That Fail Builds
+
+#### hot --assert-below
+
+```bash
+ap-query hot profile.jfr --assert-below 20.0
+# Exit 1 if top method self% >= 20.0
+```
+
+Output on failure:
+```
+error: ASSERT FAILED: HashMap.resize self=28.3% >= threshold 20.0%
+```
+
+#### script with fail()
+
+```python
+p = open("profile.jfr")
+top = p.hot(1)[0]
+
+if top.self_pct > 15.0:
+    fail("Top method " + top.name + " exceeds budget: " + str(top.self_pct) + "%")
+```
+
+```bash
+ap-query script check.star
+# Exit 1 if script calls fail()
+```
+
+#### diff with grep
+
+```bash
+ap-query diff baseline.jfr candidate.jfr --min-delta 2.0 > diff.txt
+
+if grep -q "REGRESSION" diff.txt; then
+  echo "Regressions detected!"
+  cat diff.txt
+  exit 1
+fi
+```
+
+## CI Pipeline Examples
+
+### GitHub Actions
+
+```yaml
+name: Performance Regression Test
+
+on: [pull_request]
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install ap-query
+        run: |
+          wget https://github.com/jerrinot/ap-query/releases/latest/download/ap-query_linux_x64.tar.gz
+          tar xzf ap-query_linux_x64.tar.gz
+          sudo mv ap-query /usr/local/bin/
+      
+      - name: Install async-profiler
+        run: |
+          wget https://github.com/async-profiler/async-profiler/releases/latest/download/async-profiler-3.0-linux-x64.tar.gz
+          tar xzf async-profiler-3.0-linux-x64.tar.gz
+          echo "ASPROF=$PWD/async-profiler-3.0-linux-x64/bin/asprof" >> $GITHUB_ENV
+      
+      - name: Build and start app
+        run: |
+          ./mvnw package
+          java -jar target/app.jar &
+          echo $! > app.pid
+          sleep 10
+      
+      - name: Record profile
+        run: |
+          PID=$(cat app.pid)
+          $ASPROF -d 30 -o jfr -f profile.jfr $PID
+      
+      - name: Check for regressions
+        run: |
+          ap-query hot profile.jfr --assert-below 15.0
+      
+      - name: Upload profile
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: profile.jfr
+          path: profile.jfr
+```
+
+### GitLab CI
+
+```yaml
+performance_test:
+  stage: test
+  image: openjdk:17
+  script:
+    # Install ap-query
+    - wget -q https://github.com/jerrinot/ap-query/releases/latest/download/ap-query_linux_x64.tar.gz
+    - tar xzf ap-query_linux_x64.tar.gz
+    - export PATH=$PWD:$PATH
+    
+    # Install async-profiler
+    - wget -q https://github.com/async-profiler/async-profiler/releases/latest/download/async-profiler-3.0-linux-x64.tar.gz
+    - tar xzf async-profiler-3.0-linux-x64.tar.gz
+    - export ASPROF=$PWD/async-profiler-3.0-linux-x64/bin/asprof
+    
+    # Start app and profile
+    - java -jar target/app.jar &
+    - PID=$!
+    - sleep 10
+    - $ASPROF -d 30 -o jfr -f profile.jfr $PID
+    
+    # Assert threshold
+    - ap-query hot profile.jfr --assert-below 20.0
+  
+  artifacts:
+    when: on_failure
+    paths:
+      - profile.jfr
+```
+
+### Jenkins
+
+```groovy
+pipeline {
+    agent any
+    
+    stages {
+        stage('Profile') {
+            steps {
+                sh '''
+                    # Start app
+                    java -jar target/app.jar &
+                    PID=$!
+                    sleep 10
+                    
+                    # Profile
+                    /opt/async-profiler/bin/asprof -d 30 -o jfr -f profile.jfr $PID
+                    
+                    # Check threshold
+                    ap-query hot profile.jfr --assert-below 15.0
+                '''
+            }
+        }
+    }
+    
+    post {
+        failure {
+            archiveArtifacts artifacts: 'profile.jfr'
+        }
+    }
+}
+```
+
+## Automated Regression Detection
+
+### Compare Baseline vs PR
+
+```bash
+#!/bin/bash
+set -e
+
+# Profile main branch (baseline)
+git checkout main
+./build.sh
+java -jar target/app.jar &
+BASELINE_PID=$!
+sleep 10
+asprof -d 30 -o jfr -f baseline.jfr $BASELINE_PID
+kill $BASELINE_PID
+
+# Profile PR branch
+git checkout $PR_BRANCH
+./build.sh
+java -jar target/app.jar &
+PR_PID=$!
+sleep 10
+asprof -d 30 -o jfr -f pr.jfr $PR_PID
+kill $PR_PID
+
+# Compare
+ap-query diff baseline.jfr pr.jfr --min-delta 2.0 > diff.txt
+
+if grep -q "REGRESSION" diff.txt; then
+  echo "::error::Performance regression detected"
+  cat diff.txt
+  exit 1
+fi
+
+echo "No regressions detected"
+```
+
+### Store Profiles as Artifacts
+
+```yaml
+artifacts:
+  paths:
+    - baseline.jfr
+    - pr.jfr
+    - diff.txt
+  when: always
+```
+
+Developers can download and analyze locally.
+
+## Performance Budgets
+
+### Per-Method Budget (Starlark)
+
+```python
+# budgets.star
+p = open("profile.jfr")
+
+budgets = {
+    "HashMap.resize": 10.0,
+    "JSON.parse": 15.0,
+    "String.split": 8.0,
+}
+
+for m in p.hot():
+    if m.name in budgets:
+        threshold = budgets[m.name]
+        if m.self_pct > threshold:
+            fail(m.name + " exceeds budget: " + str(m.self_pct) + "% > " + str(threshold) + "%")
+
+print("All budgets satisfied")
+```
+
+```bash
+ap-query script budgets.star
+# Exit 1 if any budget is exceeded
+```
+
+### Global Threshold
+
+```bash
+ap-query hot profile.jfr --assert-below 20.0
+```
+
+Fails if **any method** exceeds 20% self time.
+
+### Composite Budgets
+
+```python
+# Check multiple conditions
+p = open("profile.jfr")
+
+top_method = p.hot(1)[0]
+if top_method.self_pct > 25.0:
+    fail("Top method exceeds 25%: " + top_method.name)
+
+top5_total = sum([m.self_pct for m in p.hot(5)])
+if top5_total > 80.0:
+    fail("Top 5 methods exceed 80%: " + str(top5_total))
+
+print("Budgets OK")
+```
+
+## Load Testing Integration
+
+### Profile During Load Test
+
+```bash
+#!/bin/bash
+# Start app
+java -jar app.jar &
+PID=$!
+
+# Wait for warmup
+sleep 30
+
+# Start profiling
+asprof -d 60 -o jfr -f profile.jfr $PID &
+PROFILER_PID=$!
+
+# Run load test
+jmeter -n -t loadtest.jmx
+
+# Wait for profiler to finish
+wait $PROFILER_PID
+
+# Analyze
+ap-query hot profile.jfr --assert-below 15.0
+ap-query hot profile.jfr --event alloc --assert-below 20.0
+```
+
+### Multi-Stage Load Test
+
+```bash
+# Low load (100 RPS)
+jmeter -n -t low-load.jmx
+asprof -d 30 -o jfr -f low.jfr $PID
+
+# High load (1000 RPS)
+jmeter -n -t high-load.jmx
+asprof -d 30 -o jfr -f high.jfr $PID
+
+# Compare
+ap-query diff low.jfr high.jfr --min-delta 5.0
+```
+
+## Docker/Container Support
+
+### Dockerfile
+
+```dockerfile
+FROM openjdk:17
+
+# Install ap-query
+RUN wget https://github.com/jerrinot/ap-query/releases/latest/download/ap-query_linux_x64.tar.gz \
+  && tar xzf ap-query_linux_x64.tar.gz \
+  && mv ap-query /usr/local/bin/ \
+  && rm ap-query_linux_x64.tar.gz
+
+# Install async-profiler
+RUN wget https://github.com/async-profiler/async-profiler/releases/latest/download/async-profiler-3.0-linux-x64.tar.gz \
+  && tar xzf async-profiler-3.0-linux-x64.tar.gz \
+  && mv async-profiler-3.0-linux-x64 /opt/async-profiler \
+  && rm async-profiler-3.0-linux-x64.tar.gz
+
+COPY target/app.jar /app.jar
+
+# Profile entrypoint
+CMD java -jar /app.jar & \
+  PID=$! && \
+  sleep 10 && \
+  /opt/async-profiler/bin/asprof -d 30 -o jfr -f /profile.jfr $PID && \
+  ap-query hot /profile.jfr --assert-below 15.0
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  app:
+    build: .
+    volumes:
+      - ./profiles:/profiles
+    environment:
+      - PROFILE_PATH=/profiles/profile.jfr
+    command: |
+      sh -c '
+        java -jar /app.jar &
+        PID=$$!
+        sleep 10
+        /opt/async-profiler/bin/asprof -d 30 -o jfr -f $$PROFILE_PATH $$PID
+        ap-query hot $$PROFILE_PATH --assert-below 15.0
+      '
+```
+
+## Reporting
+
+### Generate Report for Humans
+
+```bash
+ap-query hot profile.jfr --top 20 > report.txt
+ap-query info profile.jfr >> report.txt
+
+# Post to PR comment (GitHub Actions)
+gh pr comment $PR_NUMBER --body-file report.txt
+```
+
+### Structured Output (JSON-like)
+
+```python
+# report.star
+import json
+
+p = open("profile.jfr")
+
+result = {
+    "samples": p.samples,
+    "duration": p.duration,
+    "top_method": None,
+}
+
+hot = p.hot(1)
+if len(hot) > 0:
+    m = hot[0]
+    result["top_method"] = {
+        "name": m.name,
+        "self_pct": m.self_pct,
+    }
+
+print(json.dumps(result))
+```
+
+```bash
+ap-query script report.star > report.json
+```
+
+<Note>
+  Starlark doesn't have native JSON, but you can format manually for simple cases.
+</Note>
+
+## Common CI Patterns
+
+### Enforce No Single Hotspot
+
+```bash
+ap-query hot profile.jfr --assert-below 15.0
+```
+
+### Detect Any Regression
+
+```bash
+ap-query diff baseline.jfr pr.jfr --min-delta 2.0 | grep -q REGRESSION && exit 1
+```
+
+### Budget Multiple Methods
+
+```python
+budgets = {"HashMap.resize": 10.0, "JSON.parse": 15.0}
+for m in p.hot():
+    if m.name in budgets and m.self_pct > budgets[m.name]:
+        fail(m.name + " exceeds budget")
+```
+
+### Profile Only Steady State
+
+```bash
+# Skip first 30s warmup
+asprof -d 60 -o jfr -f profile.jfr $PID
+ap-query hot profile.jfr --from 30s --assert-below 15.0
+```
+
+### Multi-Event Checks
+
+```bash
+# CPU budget
+ap-query hot profile.jfr --event cpu --assert-below 15.0
+
+# Allocation budget
+ap-query hot profile.jfr --event alloc --assert-below 20.0
+```
+
+## Troubleshooting
+
+### Profiler Fails in CI
+
+**Problem**: `asprof` returns "Could not start attach mechanism"
+
+**Solution**: Ensure JVM has `-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints`
+
+```bash
+java -XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints -jar app.jar
+```
+
+### Noisy Regressions
+
+**Problem**: CI fails intermittently due to sampling variance
+
+**Solutions**:
+1. Increase profiling duration: `-d 60` instead of `-d 30`
+2. Raise `--min-delta`: `--min-delta 5.0` instead of `0.5`
+3. Profile after warmup: `--from 30s`
+
+### Container Permissions
+
+**Problem**: `asprof` fails with permission denied
+
+**Solution**: Use `--cap-add SYS_ADMIN` or `--privileged`:
+
+```yaml
+services:
+  app:
+    cap_add:
+      - SYS_ADMIN
+```
+
+### Large Artifacts
+
+JFR files can be large (10-100 MB). Compress before uploading:
+
+```bash
+gzip profile.jfr
+# Upload profile.jfr.gz
+```
+
+ap-query reads `.jfr.gz` directly:
+
+```bash
+ap-query hot profile.jfr.gz
+```
+
+## Best Practices
+
+1. **Profile after warmup**: Use `--from 30s` to skip JIT compilation
+2. **Use high thresholds initially**: Start with `--assert-below 25.0`, tighten over time
+3. **Store baselines**: Save baseline profiles for long-term comparison
+4. **Document budgets**: Explain why each threshold is set
+5. **Test locally first**: Run CI profiling steps locally before committing
+
+## Related Workflows
+
+- [Agent Integration](./agent-integration) — Install skills for local analysis
+- [Performance Regression](./performance-regression) — Manual diff workflows
+- [Starlark Scripting](./starlark-scripting) — Custom CI checks

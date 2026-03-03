@@ -1,0 +1,310 @@
+---
+title: 'Stack'
+description: 'Stack type for filtering and navigating call stacks'
+---
+
+## Overview
+
+A `Stack` represents a single call stack with its frame list, thread name, and sample count. Stacks are ordered from root (index 0) to leaf (index -1).
+
+Access stacks via `profile.stacks`:
+
+```python
+p = open("profile.jfr")
+for s in p.stacks:
+    print(s.depth, s.samples)
+```
+
+## Properties
+
+<ResponseField name="frames" type="list[Frame]">
+  List of frames from root to leaf. `frames[0]` is the root, `frames[-1]` is the leaf.
+  
+  ```python
+  for f in s.frames:
+      print(f.name)
+  ```
+</ResponseField>
+
+<ResponseField name="thread" type="string">
+  Thread name for this stack. Empty string if unavailable.
+  
+  ```python
+  if s.thread:
+      print(s.thread)  # "worker-pool-3"
+  ```
+</ResponseField>
+
+<ResponseField name="samples" type="int">
+  Sample count for this stack.
+  
+  ```python
+  print(s.samples)  # 42
+  ```
+</ResponseField>
+
+<ResponseField name="leaf" type="Frame | None">
+  Leaf frame (top of stack). `None` for empty stacks.
+  
+  ```python
+  if s.leaf:
+      print(s.leaf.name)  # "HashMap.resize"
+  ```
+</ResponseField>
+
+<ResponseField name="root" type="Frame | None">
+  Root frame (bottom of stack). `None` for empty stacks.
+  
+  ```python
+  if s.root:
+      print(s.root.name)  # "Thread.run"
+  ```
+</ResponseField>
+
+<ResponseField name="depth" type="int">
+  Stack depth (number of frames).
+  
+  ```python
+  print(s.depth)  # 12
+  ```
+</ResponseField>
+
+## Methods
+
+### has()
+
+Check if any frame matches a pattern (substring match on both short name and FQN).
+
+```python
+has(pattern) → bool
+```
+
+<ParamField path="pattern" type="string" required>
+  Substring to search for. Not a regex - use [`match()`](/api/functions#match) for regex.
+</ParamField>
+
+```python
+if s.has("HashMap"):
+    print("Found HashMap")
+
+# Matches both short name and FQN
+s.has("resize")         # Matches HashMap.resize
+s.has("HashMap.resize") # Also matches
+s.has("java.util")      # Matches java.util.HashMap
+```
+
+<Warning>
+  `has()` only searches frame names, not thread names. Use [`thread_has()`](#thread_has) to filter by thread.
+</Warning>
+
+### has_seq()
+
+Check if patterns match in order (not necessarily adjacent).
+
+```python
+has_seq(pattern1, pattern2, ...) → bool
+```
+
+<ParamField path="pattern1, pattern2, ..." type="string" required>
+  Patterns that must appear in order from root to leaf.
+</ParamField>
+
+```python
+# Check for Server.handle → Service.process → HashMap.put
+if s.has_seq("Server.handle", "Service.process", "HashMap.put"):
+    print("Request path identified")
+
+# Patterns don't need to be adjacent
+s.has_seq("Thread.run", "HashMap")  # Matches with frames in between
+```
+
+### above()
+
+Return frames above (toward leaf) from a matching frame.
+
+```python
+above(pattern) → list[Frame]
+```
+
+<ParamField path="pattern" type="string" required>
+  Pattern to match. First matching frame is used.
+</ParamField>
+
+**Returns:** List of frames after the match, or empty list if no match. `above[0]` is the direct callee.
+
+```python
+# Stack: Thread.run → Server.handle → Service.process → HashMap.put
+above = s.above("Server.handle")
+# Returns: [Service.process, HashMap.put]
+
+if len(above) > 0:
+    print("Direct callee: " + above[0].name)  # Service.process
+    print("Leaf: " + above[-1].name)          # HashMap.put
+```
+
+### below()
+
+Return frames below (toward root) from a matching frame.
+
+```python
+below(pattern) → list[Frame]
+```
+
+<ParamField path="pattern" type="string" required>
+  Pattern to match. First matching frame is used.
+</ParamField>
+
+**Returns:** List of frames before the match, or empty list if no match. `below[-1]` is the direct caller.
+
+```python
+# Stack: Thread.run → Server.handle → Service.process → HashMap.put
+below = s.below("HashMap.put")
+# Returns: [Thread.run, Server.handle, Service.process]
+
+if len(below) > 0:
+    print("Direct caller: " + below[-1].name)  # Service.process
+    print("Root: " + below[0].name)            # Thread.run
+```
+
+### thread_has()
+
+Check if thread name contains a pattern (substring match).
+
+```python
+thread_has(pattern) → bool
+```
+
+<ParamField path="pattern" type="string" required>
+  Substring to search in thread name.
+</ParamField>
+
+```python
+if s.thread_has("worker"):
+    print("Worker thread: " + s.thread)
+
+# Filter to specific thread pool
+workers = p.filter(lambda s: s.thread_has("worker-pool-1"))
+```
+
+<Info>
+  Use `thread_has()` instead of `has()` when filtering by thread name. `has()` only searches frame names.
+</Info>
+
+## Frame Type
+
+Each frame in `stack.frames` is a `Frame` object.
+
+### Properties
+
+<ResponseField name="name" type="string">
+  Short name (e.g. `"HashMap.resize"`).
+</ResponseField>
+
+<ResponseField name="fqn" type="string">
+  Fully-qualified name (e.g. `"java.util.HashMap.resize"`).
+</ResponseField>
+
+<ResponseField name="pkg" type="string">
+  Package name (e.g. `"java.util"`). Empty for native/kernel frames.
+</ResponseField>
+
+<ResponseField name="cls" type="string">
+  Class name (e.g. `"HashMap"`). Empty for native/kernel frames.
+</ResponseField>
+
+<ResponseField name="method" type="string">
+  Method name (e.g. `"resize"`). For kernel/native frames without dots, equals the full name.
+</ResponseField>
+
+<ResponseField name="line" type="int">
+  Source line number. `0` if unavailable.
+</ResponseField>
+
+### Examples
+
+```python
+f = s.leaf
+print(f.name)    # HashMap.resize
+print(f.fqn)     # java.util.HashMap.resize
+print(f.pkg)     # java.util
+print(f.cls)     # HashMap
+print(f.method)  # resize
+print(f.line)    # 742
+```
+
+**Native/shared library frames:**
+
+```python
+# Frame: libc.so.6.__sched_yield
+f = s.leaf
+print(f.name)    # __sched_yield
+print(f.method)  # __sched_yield
+print(f.pkg)     # (empty)
+print(f.cls)     # (empty)
+```
+
+**Kernel frames:**
+
+```python
+# Frame: __do_softirq
+f = s.leaf
+print(f.name)    # __do_softirq
+print(f.method)  # __do_softirq
+print(f.pkg)     # (empty)
+```
+
+## Examples
+
+### Filter stacks by pattern
+
+```python
+p = open("profile.jfr")
+filtered = p.filter(lambda s: s.has("HashMap"))
+print(filtered.samples)
+```
+
+### Find request paths
+
+```python
+# Find stacks: Server.handle → Service.process → Database.query
+for s in p.stacks:
+    if s.has_seq("Server.handle", "Service.process", "Database.query"):
+        print(s.samples, s.thread)
+```
+
+### Analyze callers
+
+```python
+# Find what calls HashMap.resize
+callers = {}
+for s in p.stacks:
+    if s.has("HashMap.resize"):
+        below = s.below("HashMap.resize")
+        if len(below) > 0:
+            caller = below[-1].name
+            callers[caller] = callers.get(caller, 0) + s.samples
+
+for name, count in sorted(callers.items(), key=lambda x: x[1], reverse=True)[:10]:
+    print(rjust(str(count), 6) + "  " + name)
+```
+
+### Filter by thread and depth
+
+```python
+# Long stacks in worker threads
+deep = p.filter(lambda s: s.thread_has("worker") and s.depth > 20)
+print(deep.samples)
+```
+
+### Emit filtered stacks
+
+```python
+# Pipe HashMap stacks to ap-query hot
+for s in p.stacks:
+    if s.has("HashMap"):
+        emit(s)
+```
+
+```bash
+ap-query script -c '...' | ap-query hot -
+```

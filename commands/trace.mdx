@@ -1,0 +1,226 @@
+---
+title: trace
+description: Hottest path from a method to leaf for finding critical paths
+---
+
+The `trace` command follows the single hottest path from a method down to the leaf frame. It answers "what is the most expensive thing this method does?"
+
+## Usage
+
+```bash
+ap-query trace <file> -m <method> [flags]
+```
+
+<Warning>
+  The `-m/--method` flag is required for the trace command.
+</Warning>
+
+## What It Shows
+
+Starting from your specified method, `trace` follows the hottest child at each level until reaching a leaf. At each step it shows:
+
+- Percentage of samples passing through this frame
+- Method name
+- Sibling annotation (showing alternate paths not taken)
+- Self-time annotation at the leaf
+
+Finally, it prints the hottest leaf method and its self percentage.
+
+## Flags
+
+<ParamField path="-m, --method" type="string" required>
+  Substring match on method name (required). The starting point for the trace.
+</ParamField>
+
+<ParamField path="--min-pct" type="float" default="0.5">
+  Hide nodes below this percentage threshold. Stops the trace early if percentage drops too low.
+</ParamField>
+
+<ParamField path="--fqn" type="boolean">
+  Show fully-qualified names (full package paths) instead of short names.
+</ParamField>
+
+<ParamField path="--hide" type="regex">
+  Remove frames matching this regex before analysis. Useful for collapsing uninteresting intermediate frames.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only).
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only).
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Trace
+
+```bash
+ap-query trace profile.jfr -m HashMap.put
+```
+
+```
+[18.4%] HashMap.put
+[16.2%] HashMap.putVal  (+2 siblings, next: 1.8% HashMap.hash)
+[8.9%] HashMap.resize  (+3 siblings, next: 3.4% HashMap.hash)
+[4.2%] Arrays.copyOf  (+2 siblings, next: 1.4% HashMap.newNode)
+[2.3%] System.arraycopy  ← self=2.3%
+Hottest leaf: System.arraycopy (self=2.3%)
+```
+
+**Interpretation:**
+- 18.4% of samples contain `HashMap.put`
+- The hottest path goes through `HashMap.putVal` (16.2%)
+- Then through `HashMap.resize` (8.9%)
+- Then `Arrays.copyOf` (4.2%)
+- Finally reaches `System.arraycopy` (2.3% self-time)
+- At each step, shows alternative paths not taken
+
+### Show Alternate Paths
+
+The sibling annotations tell you what else happens:
+
+```
+[16.2%] HashMap.putVal  (+2 siblings, next: 1.8% HashMap.hash)
+```
+
+This means:
+- We followed the 16.2% path through `HashMap.putVal`
+- There are 2 other siblings (alternate paths from the parent)
+- The next-hottest sibling is `HashMap.hash` at 1.8%
+
+<Tip>
+  Sibling annotations help you discover other expensive paths. If the "next" sibling is close in percentage to the chosen path, investigate it separately.
+</Tip>
+
+### Fully-Qualified Names
+
+```bash
+ap-query trace profile.jfr -m processRequest --fqn
+```
+
+```
+[45.3%] com.example.UserService.processRequest
+[38.2%] com.example.UserService.validateInput
+[22.1%] com.example.ValidationEngine.checkRules
+[15.8%] java.util.regex.Pattern.matcher  ← self=15.8%
+Hottest leaf: java.util.regex.Pattern.matcher (self=15.8%)
+```
+
+### Lower Percentage Threshold
+
+```bash
+ap-query trace profile.jfr -m processRequest --min-pct 0.1
+```
+
+Traces deeper into less significant paths (down to 0.1% instead of default 0.5%).
+
+### Remove Framework Frames
+
+```bash
+ap-query trace profile.jfr -m handleRequest --hide "org\.springframework\..*"
+```
+
+Collapse Spring framework frames to focus on application code paths.
+
+### Multiple Root Matches
+
+If `-m` matches multiple methods, traces from each:
+
+```bash
+ap-query trace profile.jfr -m hash
+```
+
+```
+# matched 3 methods: HashMap.hash, String.hashCode, HashSet.hash
+
+[12.1%] HashMap.hash  ← self=8.3%
+Hottest leaf: HashMap.hash (self=8.3%)
+
+[8.9%] String.hashCode
+[5.1%] String.coder  ← self=5.1%
+Hottest leaf: String.coder (self=5.1%)
+
+[2.3%] HashSet.hash
+[1.8%] Object.hashCode  ← self=1.8%
+Hottest leaf: Object.hashCode (self=1.8%)
+```
+
+### Allocation Tracing
+
+```bash
+ap-query trace profile.jfr -m processRequest --event alloc
+```
+
+Find the hottest allocation path from `processRequest`.
+
+## Reading the Output
+
+```
+[45.3%] UserService.processRequest
+[38.2%] UserService.validateInput  (+1 sibling, next: 6.5% UserService.fetchData)
+[22.1%] ValidationEngine.checkRules  (+2 siblings, next: 12.3% ValidationEngine.sanitize)
+[15.8%] Pattern.matcher  ← self=15.8%
+Hottest leaf: Pattern.matcher (self=15.8%)
+```
+
+Read this as:
+1. We're tracing from `processRequest` (45.3% of samples)
+2. The hottest path goes through `validateInput` (38.2%)
+3. There's an alternate path through `fetchData` at 6.5% we didn't follow
+4. From `validateInput`, hottest path is `checkRules` (22.1%)
+5. The leaf is `Pattern.matcher` with 15.8% self-time
+
+<Note>
+  The percentages decrease as you descend because you're following one path through a branching tree. The leaf percentage represents actual CPU time spent.
+</Note>
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Critical Path Analysis">
+    Find the single most expensive thing a method does
+  </Card>
+  
+  <Card title="Optimization Targeting">
+    Quickly identify the leaf method that consumes the most time
+  </Card>
+  
+  <Card title="Performance Investigation">
+    Understand why a hot method is slow by following its execution
+  </Card>
+  
+  <Card title="Comparing Paths">
+    Run multiple times with different `-m` values to compare different paths
+  </Card>
+</CardGroup>
+
+## Trace vs Tree
+
+| Command | Shows | Use When |
+|---------|-------|----------|
+| **trace** | Single hottest path | You want the critical path only |
+| **tree** | All paths (full tree) | You want to see all possibilities |
+
+`trace` is focused and fast. `tree` is comprehensive but can be overwhelming for complex methods.
+
+## See Also
+
+- [`tree`](/commands/tree) - See all paths from a method (not just the hottest)
+- [`hot`](/commands/hot) - Find methods to trace
+- [`callers`](/commands/callers) - See who calls a method

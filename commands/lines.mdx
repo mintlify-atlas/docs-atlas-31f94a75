@@ -1,0 +1,275 @@
+---
+title: lines
+description: Show source line breakdown within a method
+---
+
+## Overview
+
+The `lines` command provides a source-line level breakdown of where time is spent within a specific method. This helps identify:
+- Which lines in a method are most expensive
+- Loop iterations vs initialization overhead
+- Specific statements causing bottlenecks
+
+<Note>
+Line information requires debug symbols and profiler support. Not all profiles include line numbers.
+</Note>
+
+## Usage
+
+```bash
+ap-query lines <file> -m <method> [flags]
+```
+
+## Flags
+
+<ParamField path="--method" type="string" required>
+  **Required.** Substring to match on method name
+</ParamField>
+
+<ParamField path="--top" type="int" default="0">
+  Limit output rows (0 = unlimited)
+</ParamField>
+
+<ParamField path="--fqn" type="boolean" default="false">
+  Show fully-qualified method names in output
+</ParamField>
+
+### Shared Flags
+
+Common flags supported by most commands:
+
+<ParamField path="--event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name
+</ParamField>
+
+<ParamField path="--thread" type="string">
+  Filter to threads matching substring
+</ParamField>
+
+<ParamField path="--start" type="duration">
+  Start time of window (JFR only)
+</ParamField>
+
+<ParamField path="--end" type="duration">
+  End time of window (JFR only)
+</ParamField>
+
+## Output Format
+
+Displays a ranked table:
+```
+SOURCE:LINE                               SAMPLES     PCT
+HashMap.resize:1245                          4823   18.2%
+HashMap.resize:1251                          3201   12.1%
+HashMap.resize:1234                          1456    5.5%
+```
+
+Columns:
+- **SOURCE:LINE**: Method name and line number
+- **SAMPLES**: Sample count for that line
+- **PCT**: Percentage of total profile samples
+
+Results are sorted by sample count (descending).
+
+## Examples
+
+### Basic Line Breakdown
+
+```bash
+ap-query lines profile.jfr -m HashMap.resize
+```
+
+Output:
+```
+SOURCE:LINE                               SAMPLES     PCT
+HashMap.resize:1245                          4823   18.2%
+HashMap.resize:1251                          3201   12.1%
+HashMap.resize:1234                          1456    5.5%
+HashMap.resize:1248                           892    3.4%
+```
+
+### Top Lines Only
+
+Show just the top 5 lines:
+
+```bash
+ap-query lines profile.jfr -m HashMap.resize --top 5
+```
+
+### Multiple Methods Matching
+
+When multiple methods match, all are analyzed:
+
+```bash
+ap-query lines profile.jfr -m Service.process
+```
+
+Output shows lines from all matching methods (e.g., `UserService.process`, `OrderService.process`).
+
+### Fully-Qualified Names
+
+Distinguish methods with identical short names:
+
+```bash
+ap-query lines profile.jfr -m Service.process --fqn
+```
+
+Output:
+```
+SOURCE:LINE                                      SAMPLES     PCT
+com.example.user.Service.process:42                 823   15.2%
+com.example.order.Service.process:89                456    8.4%
+```
+
+### Thread-Specific Lines
+
+```bash
+ap-query lines profile.jfr -m "Database.query" --thread worker
+```
+
+### Allocation Hot Lines
+
+Find which lines allocate the most:
+
+```bash
+ap-query lines profile.jfr -m processData --event alloc
+```
+
+### Time Window Analysis
+
+```bash
+ap-query lines profile.jfr -m authenticate --start 1m --end 2m
+```
+
+## Requirements
+
+### Line Number Availability
+
+Line information requires:
+
+1. **Debug symbols** in the profiled binary/JAR
+2. **Profiler support** for line numbers:
+   - async-profiler 2.0+ with `-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints`
+   - JFR with debug info
+3. **Compiled code**: Interpreted methods may not have line info
+
+### Checking for Line Info
+
+If you see:
+```
+no line info for frames matching 'MethodName'
+```
+
+The method exists but lacks line numbers. Possible reasons:
+- No debug symbols (`javac -g`)
+- Native or kernel frames
+- JVM runtime methods
+- Inlined code (line may be attributed to caller)
+
+## Use Cases
+
+### Loop Optimization
+
+Identify expensive loop iterations:
+
+```bash
+ap-query lines profile.jfr -m processItems
+```
+
+Example shows line 145 (loop body) is 10x hotter than line 142 (loop setup).
+
+### Conditional Branch Cost
+
+```bash
+ap-query lines profile.jfr -m validate
+```
+
+Compare samples on different conditional branches to find which path dominates.
+
+### Method Refactoring
+
+Before refactoring a large method, see which sections are expensive:
+
+```bash
+ap-query lines profile.jfr -m "LargeMethod" --top 10
+```
+
+Extract hot lines into a separate method for focused optimization.
+
+### Validating Optimizations
+
+Compare line profiles before/after changes:
+
+```bash
+ap-query lines before.jfr -m compute > before-lines.txt
+ap-query lines after.jfr -m compute > after-lines.txt
+diff before-lines.txt after-lines.txt
+```
+
+### Understanding Inlining
+
+Samples may appear on the call site rather than the inlined method's original source:
+
+```bash
+ap-query lines profile.jfr -m caller
+```
+
+If you see high samples on a single line that calls a small method, the JIT likely inlined it.
+
+## Interpretation Tips
+
+<Tip>
+**Line accuracy**: Line numbers are approximate due to JIT compilation and instruction reordering. Treat as "near this line" rather than exact.
+</Tip>
+
+<Tip>
+**Inlining effects**: If a method you expected to see isn't in the profile, it may have been inlined. Check the caller with `lines`.
+</Tip>
+
+<Tip>
+**Native code**: Native methods (C, C++, Rust) rarely have line info unless compiled with debug symbols.
+</Tip>
+
+<Warning>
+Line numbers can be misleading after aggressive JIT optimizations. Cross-reference with source code to verify the actual operation at each line.
+</Warning>
+
+## Troubleshooting
+
+### No Matching Method
+
+If you see:
+```
+no samples (empty profile or all filtered out)
+```
+
+Check:
+- Method name spelling (case-sensitive)
+- Method exists in this event type: try `--event wall` or `--event alloc`
+- Method was sampled: use `ap-query hot` to verify it appears
+
+### Method Exists But No Line Info
+
+Error:
+```
+no line info for frames matching 'MethodName'
+```
+
+Solutions:
+- Recompile with debug info: `javac -g`
+- Add JVM flags: `-XX:+UnlockDiagnosticVMOptions -XX:+DebugNonSafepoints`
+- Check if method is native/kernel code (line info not available)
+
+### Unexpected Line Numbers
+
+If line numbers don't match your source:
+- Ensure JARs/binaries match the profiled version
+- Check for compiler optimizations reordering code
+- Verify debug info wasn't stripped during build
+
+## See Also
+
+- [hot](/commands/hot) - Find which methods to investigate with `lines`
+- [callers](/commands/callers) - Show call paths to a method
+- [tree](/commands/tree) - Visualize call tree from a method
+- [script](/commands/script) - Access line numbers via `Frame.line` in scripts

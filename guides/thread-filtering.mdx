@@ -1,0 +1,356 @@
+---
+title: Thread Filtering
+description: Isolate performance issues to specific threads or thread groups
+---
+
+## Overview
+
+By default, ap-query aggregates samples across all threads. The `-t`/`--thread` flag filters to threads matching a substring, essential when different thread pools have different workloads.
+
+## Basic Usage
+
+### Filter by Thread Name
+
+```bash
+# HTTP request handler threads
+ap-query hot profile.jfr -t "http-nio-8080"
+
+# Kafka consumer threads
+ap-query tree profile.jfr -t "kafka-consumer" -m poll
+
+# Background scheduler threads
+ap-query hot profile.jfr -t "pool-1-thread" --top 20
+```
+
+The filter matches **any thread name containing the substring** (case-sensitive).
+
+### Filter Output
+
+ap-query prints the filter match count:
+
+```
+Thread filter: http-nio-8080 — 1,234/5,678 samples (21.7%)
+```
+
+- **1,234 samples** matched the filter
+- **5,678 samples** total
+- **21.7%** of samples are from matching threads
+
+<Note>
+  If no threads match, analysis continues with 0 samples and prints empty results.
+</Note>
+
+## Discovering Thread Names
+
+Use the `threads` command to see thread distribution:
+
+```bash
+ap-query threads profile.jfr
+```
+
+Output:
+```
+=== THREADS (top 10) ===
+THREAD                                SAMPLES      %
+http-nio-8080-exec-12                   1,234   21.7%
+http-nio-8080-exec-7                      987   17.4%
+ScheduledExecutor-1                       456    8.0%
+kafka-consumer-0                          321    5.7%
+pool-1-thread-3                           234    4.1%
+```
+
+<Tip>
+  Copy thread names from `threads` output to use as `-t` filter values.
+</Tip>
+
+## Thread Name Patterns
+
+### Exact Thread Name
+
+```bash
+ap-query hot profile.jfr -t "http-nio-8080-exec-12"
+```
+
+Matches only that specific thread.
+
+### Thread Pool (Common Prefix)
+
+```bash
+ap-query hot profile.jfr -t "http-nio"
+```
+
+Matches all threads with `http-nio` in the name:
+- `http-nio-8080-exec-1`
+- `http-nio-8080-exec-2`
+- `http-nio-9090-exec-1`
+
+### Thread Group
+
+```bash
+ap-query hot profile.jfr -t "exec"
+```
+
+Matches any thread containing `exec` (executor pools).
+
+### Multiple Filters (Repeated Flag Not Supported)
+
+To analyze multiple thread groups, run separate commands:
+
+```bash
+ap-query hot profile.jfr -t "http-nio" > http-threads.txt
+ap-query hot profile.jfr -t "kafka" > kafka-threads.txt
+```
+
+Or use scripting (see [Starlark Scripting](./starlark-scripting)).
+
+## Commands Supporting Thread Filtering
+
+All analysis commands accept `-t`/`--thread`:
+
+- `hot` — Hot methods per thread
+- `tree` — Call tree per thread
+- `trace` — Hottest path per thread
+- `callers` — Callers per thread
+- `lines` — Line-level profile per thread
+- `threads` — Pre-filtered thread list
+- `filter` — Filter stacks by thread + method
+- `collapse` — Export thread-filtered stacks
+- `diff` — Compare thread-filtered profiles
+- `timeline` — Timeline per thread
+
+## Combining with Other Filters
+
+### Thread + Event Type
+
+```bash
+# CPU hotspots in HTTP threads
+ap-query hot profile.jfr -t "http-nio" --event cpu
+
+# Wall-clock blocking in Kafka consumers
+ap-query hot profile.jfr -t "kafka" --event wall --no-idle
+```
+
+### Thread + Time Range
+
+```bash
+# HTTP threads during load test spike
+ap-query hot profile.jfr -t "http-nio" --from 2m --to 2m30s
+```
+
+### Thread + Method Filter
+
+```bash
+# HashMap usage in scheduler threads
+ap-query filter profile.jfr -t "Scheduled" -m HashMap | ap-query hot -
+```
+
+## Real-World Use Cases
+
+### Diagnose HTTP Handler Latency
+
+<Steps>
+  <Step title="Identify thread pool">
+    ```bash
+    ap-query threads profile.jfr
+    # http-nio-8080-exec-* threads show 45% of samples
+    ```
+  </Step>
+
+  <Step title="Isolate HTTP threads">
+    ```bash
+    ap-query hot profile.jfr -t "http-nio-8080" --event wall --no-idle
+    ```
+    
+    Wall-clock events show where threads block (DB, network, locks).
+  </Step>
+
+  <Step title="Drill into blocking calls">
+    ```bash
+    ap-query tree profile.jfr -t "http-nio-8080" -m Socket.read --depth 6
+    ```
+    
+    Reveals call paths leading to slow socket reads.
+  </Step>
+</Steps>
+
+### Compare Thread Groups
+
+Identify workload differences between pools:
+
+```bash
+echo "=== HTTP Threads ==="
+ap-query hot profile.jfr -t "http-nio" --top 10
+
+echo "=== Kafka Threads ==="
+ap-query hot profile.jfr -t "kafka" --top 10
+```
+
+Output:
+```
+=== HTTP Threads ===
+HashMap.get         28.3%
+JSON.parse          15.7%
+
+=== Kafka Threads ===
+deserialize         42.1%
+CRC32.update        19.8%
+```
+
+### Find Thread-Specific Regressions
+
+```bash
+ap-query diff before.jfr after.jfr -t "worker" --min-delta 1.0
+```
+
+Shows changes only in worker threads.
+
+### Analyze Concurrency Bottlenecks
+
+```bash
+# Lock contention in executor pool
+ap-query hot profile.jfr -t "pool-1" --event lock --top 20
+```
+
+Reveals lock hotspots in a specific thread pool.
+
+## Thread Grouping
+
+The `threads` command supports `--group` to aggregate by normalized name:
+
+```bash
+ap-query threads profile.jfr --group
+```
+
+Output:
+```
+THREAD                    SAMPLES      %
+http-nio-exec                8,234   45.2%  (12 threads)
+pool-thread                  3,456   19.0%  (8 threads)
+ScheduledExecutor              987    5.4%  (2 threads)
+```
+
+Grouping normalizes:
+- `http-nio-8080-exec-1` → `http-nio-exec`
+- `pool-1-thread-3` → `pool-thread`
+- `ScheduledExecutor-1` → `ScheduledExecutor`
+
+<Tip>
+  Use `--group` to see aggregate thread pool impact before filtering.
+</Tip>
+
+## Empty Thread Names
+
+Some stacks (kernel frames, native code) may have empty thread names. These are excluded unless you filter for them explicitly:
+
+```bash
+ap-query hot profile.jfr -t ""
+```
+
+Matches stacks with no thread name.
+
+## Timeline Per Thread
+
+Combine `timeline` with `-t` to see temporal patterns per thread:
+
+```bash
+ap-query timeline profile.jfr -t "http-nio" --resolution 5s
+```
+
+Output:
+```
+0.0s-5.0s       [████████████░░░░░░░░░░░░] 1,234 samples  HashMap.get
+5.0s-10.0s      [██████████████████████░░] 2,345 samples  JSON.parse
+```
+
+Shows hot methods in HTTP threads over time.
+
+## Thread Filter Pitfalls
+
+### Case Sensitivity
+
+Thread names are **case-sensitive**:
+
+```bash
+ap-query hot profile.jfr -t "HTTP"    # Won't match "http-nio-8080-exec-1"
+ap-query hot profile.jfr -t "http"    # Matches
+```
+
+### Overly Generic Filters
+
+Be specific to avoid unintended matches:
+
+```bash
+ap-query hot profile.jfr -t "thread"  # Matches almost everything
+ap-query hot profile.jfr -t "pool-1-thread"  # More targeted
+```
+
+### No Threads Match
+
+If filter matches nothing:
+
+```
+Thread filter: nonexistent — 0/5,678 samples (0.0%)
+no samples (empty profile or all filtered out)
+```
+
+Double-check thread name with `ap-query threads profile.jfr`.
+
+## Scripting Multi-Thread Analysis
+
+For complex thread comparisons, use Starlark:
+
+```python
+p = open("profile.jfr")
+
+# Group by thread and analyze each
+groups = p.group_by(lambda s: s.thread if s.thread else "(no thread)")
+
+for name in sorted(groups.keys()):
+    prof = groups[name]
+    print("=== " + name + " ===")
+    for m in prof.hot(5):
+        print("  " + m.name + " " + str(m.self_pct) + "%")
+```
+
+See [Starlark Scripting](./starlark-scripting) for details.
+
+## Common Patterns
+
+### HTTP vs Background Threads
+
+```bash
+echo "HTTP request threads:"
+ap-query hot profile.jfr -t "http-nio" --top 5
+
+echo "Background scheduler:"
+ap-query hot profile.jfr -t "Scheduled" --top 5
+```
+
+### Find Which Thread Pool is Blocking
+
+```bash
+ap-query threads profile.jfr --event wall --no-idle
+```
+
+Sorts threads by wall-clock time (including blocked time).
+
+### Compare Same Thread Across Time
+
+```bash
+ap-query diff profile.jfr \
+  -t "worker-3" \
+  --from 0s --to 30s \
+  --vs-from 2m --vs-to 2m30s
+```
+
+Shows how one thread's profile changed over time.
+
+## Performance Considerations
+
+Thread filtering is cheap — it's a simple substring match on metadata. No performance impact even with millions of samples.
+
+## Related Workflows
+
+- [Time Range Filtering](./time-range-filtering) — Combine thread + time filters
+- [Performance Regression](./performance-regression) — Per-thread diff analysis
+- [Starlark Scripting](./starlark-scripting) — Automated multi-thread comparison

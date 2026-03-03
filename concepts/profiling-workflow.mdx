@@ -1,0 +1,304 @@
+---
+title: Profiling Workflow
+description: Complete workflow for analyzing profiling data with ap-query
+---
+
+ap-query provides a structured workflow for analyzing profiling data, from initial triage to deep investigation. This workflow applies to JFR, pprof, and collapsed-stack formats.
+
+## Overview
+
+The recommended workflow follows these stages:
+
+1. **Triage** — Understand what's in your profile
+2. **Drill down** — Explore hot methods and their callers
+3. **Trace** — Find the hottest execution path
+4. **Compare** — Identify performance regressions or improvements
+
+## 1. Triage
+
+Start every analysis with the `info` command to understand your profile's contents:
+
+```bash
+ap-query info profile.jfr
+```
+
+The info command shows:
+- Available event types (cpu, wall, alloc, lock, or hardware counters)
+- Total recording duration
+- Sample distribution across threads
+- Top 20 hot methods by self time
+- CPU vs WALL thread-group comparison (when both events exist)
+
+**When to use info:**
+- First command on any profile
+- Quick overview without specifying event types
+- Understanding thread distribution before filtering
+- Checking if cpu and wall show different bottlenecks
+
+<Info>
+If your profile contains both cpu and wall events, info automatically compares them across thread groups to highlight where threads are waiting vs actively computing.
+</Info>
+
+## 2. Drill Down
+
+Once you've identified hot methods from triage, use `tree` to explore their call trees:
+
+```bash
+# Show the call tree under HashMap.resize with 6 levels of depth
+ap-query tree profile.jfr -m HashMap.resize --depth 6
+
+# Filter to methods consuming at least 0.5% of samples
+ap-query tree profile.jfr -m HashMap.resize --min-pct 0.5
+
+# Focus on a specific thread group
+ap-query tree profile.jfr -m HashMap.resize -t "http-nio"
+```
+
+The tree command shows:
+- **Self%** — samples in this method itself
+- **Total%** — samples in this method plus its callees
+- Hierarchical call structure
+
+**When to use tree:**
+- Hot method has high Total% but low Self% (it's calling expensive methods)
+- Understanding which callee paths are most expensive
+- Comparing behavior across thread groups
+
+<Tabs>
+  <Tab title="Remove Framework Noise">
+    Use `--hide` to remove framework or wrapper frames before analysis:
+
+    ```bash
+    # Strip thread boilerplate
+    ap-query tree profile.jfr -m service --hide "Thread\.(run|start)"
+
+    # Remove proxy/reflection frames
+    ap-query tree profile.jfr -m handler --hide "\$Proxy|reflect"
+    ```
+
+    The `--hide` flag accepts regex patterns and works with tree, trace, and callers commands.
+  </Tab>
+  <Tab title="Time Window Focus">
+    When your profile has distinct phases, use `--from` and `--to` to analyze specific time ranges:
+
+    ```bash
+    # Analyze only the 12-14 second window
+    ap-query tree profile.jfr --from 12s --to 14s -m processRequest
+
+    # Compare startup (first 10s) vs steady-state
+    ap-query hot profile.jfr --from 0s --to 10s
+    ap-query hot profile.jfr --from 30s
+    ```
+
+    <Note>
+    Time-range filtering (`--from`/`--to`) requires JFR format. pprof and collapsed text lack per-sample timestamps.
+    </Note>
+  </Tab>
+</Tabs>
+
+## 3. Trace
+
+After drilling down with tree, use `trace` to find the hottest execution path from your method to the leaf:
+
+```bash
+# Show the hottest path from HashMap.resize to the actual bottleneck
+ap-query trace profile.jfr -m HashMap.resize
+
+# Trace with fully-qualified names
+ap-query trace profile.jfr -m HashMap.resize --fqn
+```
+
+The trace command shows:
+- **Root → Leaf** — single hottest path through the call stack
+- **Self%** — samples at each frame
+- Leaf frame is the actual bottleneck
+
+**When to use trace:**
+- Quick path from entry point to bottleneck
+- Confirming tree analysis with a linear view
+- Understanding the dominant execution path
+
+### Callers Analysis
+
+Use `callers` to see who's calling your hot method:
+
+```bash
+# Show all callers of HashMap.resize
+ap-query callers profile.jfr -m HashMap.resize
+```
+
+This reveals:
+- Which caller paths contribute most samples
+- Whether the method is expensive in all contexts or just one
+- Opportunity to optimize specific call sites
+
+### Line-Level Detail
+
+When JFR contains line number information, use `lines` for line-by-line breakdown:
+
+```bash
+# Show sample distribution by line number
+ap-query lines profile.jfr -m HashMap.resize
+```
+
+<Warning>
+Line numbers require `-g` (debug symbols) during compilation and async-profiler's line profiling support. Not all JFR files contain line-level data.
+</Warning>
+
+## 4. Compare
+
+Compare profiles to identify regressions, improvements, or behavioral changes:
+
+### Compare Two Profiles
+
+```bash
+# Compare before and after, showing changes ≥0.5%
+ap-query diff before.jfr after.jfr --min-delta 0.5
+```
+
+The output shows four categories:
+- **REGRESSION** — methods that got slower
+- **IMPROVEMENT** — methods that got faster  
+- **NEW** — methods only in the after profile
+- **GONE** — methods only in the before profile
+
+### Compare Time Windows
+
+For JFR files, compare two time windows within the same recording:
+
+```bash
+# Compare two 10-second windows
+ap-query diff profile.jfr \
+  --from 55s --to 1m05s \
+  --vs-from 2m45s --vs-to 3m10s
+```
+
+**When to use diff:**
+- Before/after performance testing
+- Regression detection in CI
+- Comparing different phases of a long-running profile
+- A/B testing different configurations
+
+<Tabs>
+  <Tab title="Timeline Analysis">
+    Use timeline to visualize sample distribution over time and identify spikes:
+
+    ```bash
+    # Show sample distribution in ~20 time buckets
+    ap-query timeline profile.jfr
+
+    # Use 1-second resolution buckets
+    ap-query timeline profile.jfr --resolution 1s
+
+    # Show only top 5 buckets with highest samples
+    ap-query timeline profile.jfr --top 5
+
+    # Compare CPU vs WALL efficiency over time
+    ap-query timeline profile.jfr --compare cpu,wall
+    ```
+
+    Timeline reveals:
+    - When hot methods are active (startup vs steady-state)
+    - Spikes that indicate intermittent issues
+    - Per-bucket hot method (by self time)
+    - CPU/WALL ratio per bucket (with `--compare`)
+
+    Once you identify an interesting time range, drill in with `--from`/`--to`:
+
+    ```bash
+    # Timeline shows spike at 12-14s, now drill into it
+    ap-query hot profile.jfr --from 12s --to 14s
+    ```
+  </Tab>
+  <Tab title="Thread Analysis">
+    When different threads have different workloads, analyze them separately:
+
+    ```bash
+    # See sample distribution across threads
+    ap-query threads profile.jfr
+
+    # Aggregate by normalized name (pool-1-thread-1 → pool-thread)
+    ap-query threads profile.jfr --group
+
+    # Filter to specific thread group
+    ap-query hot profile.jfr -t "http-nio" --top 20
+    ap-query tree profile.jfr -t "kafka-consumer" -m processRecords
+    ```
+
+    The `-t` flag accepts substring matches and works with all analysis commands.
+  </Tab>
+</Tabs>
+
+## Workflow Summary
+
+Here's the complete workflow in practice:
+
+```bash
+# 1. Triage: what's in the profile?
+ap-query info profile.jfr
+
+# 2. Drill down: explore hot method's call tree
+ap-query tree profile.jfr -m HashMap.resize --depth 6 --min-pct 0.5
+
+# 3. Trace: find the hottest path
+ap-query trace profile.jfr -m HashMap.resize
+
+# 4. Callers: who's calling this hot method?
+ap-query callers profile.jfr -m HashMap.resize
+
+# 5. Lines: which lines are expensive?
+ap-query lines profile.jfr -m HashMap.resize
+
+# 6. Compare: regression analysis
+ap-query diff before.jfr after.jfr --min-delta 0.5
+
+# 7. Timeline: when does the issue occur?
+ap-query timeline profile.jfr --resolution 1s
+
+# 8. Thread focus: isolate specific workload
+ap-query hot profile.jfr -t "http-nio" --top 20
+```
+
+## Best Practices
+
+- **Always start with info** — understand event types and thread distribution first
+- **Quote method names** — when analyzing methods with special characters: `ap-query tree profile.jfr -m 'MyService$1'`
+- **Use --fqn for disambiguation** — when multiple classes have the same method name
+- **Filter threads early** — when profiles mix different workloads (`-t` flag)
+- **Remove idle frames for wall profiles** — use `--no-idle` to focus on active work
+- **Combine timeline with --from/--to** — identify spikes with timeline, then drill in
+- **Export for visualization** — `ap-query collapse profile.jfr` outputs collapsed stacks for flamegraph tools
+
+## Interpreting Results
+
+<Accordion title="Self% ≈ Total%">
+  The method is a **leaf bottleneck** — most time is spent in the method itself, not its callees. Focus optimization effort here.
+
+  Example:
+  ```
+  HashMap.resize    Self: 45.2%  Total: 46.1%
+  ```
+
+  The resize method itself is the bottleneck.
+</Accordion>
+
+<Accordion title="Total% >> Self%">
+  The method is an **entry point** — most time is in its callees. Use `tree` to find the expensive callees.
+
+  Example:
+  ```
+  processRequest    Self: 2.1%   Total: 78.3%
+  ```
+
+  processRequest is expensive because of what it calls, not what it does directly.
+</Accordion>
+
+<Accordion title="High cpu, Low wall">
+  The workload is **CPU-bound** — threads are actively computing, not waiting. Optimize computational algorithms.
+</Accordion>
+
+<Accordion title="Low cpu, High wall">
+  The workload is **I/O or lock-bound** — threads spend most time waiting. Use `--no-idle` to remove wait frames and focus on active work between waits.
+
+  Switch to `--event lock` or examine I/O configuration.
+</Accordion>

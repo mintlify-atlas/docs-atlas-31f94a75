@@ -1,0 +1,289 @@
+---
+title: threads
+description: Thread sample distribution with optional grouping
+---
+
+The `threads` command analyzes sample distribution across threads, showing which threads are active and consuming resources. It supports optional grouping to aggregate thread pools.
+
+## Usage
+
+```bash
+ap-query threads <file> [flags]
+```
+
+## What It Shows
+
+A table of threads ranked by sample count, showing:
+- Thread name
+- Sample count
+- Percentage of total samples
+
+With `--group`, shows:
+- Thread group name (normalized from thread pool patterns)
+- Number of threads in the group
+- Aggregate sample count
+- Percentage of total samples
+
+## Flags
+
+<ParamField path="--top" type="int" default="0">
+  Limit output rows. Default `0` means unlimited (show all threads).
+</ParamField>
+
+<ParamField path="--group" type="boolean">
+  Group threads by normalized name, aggregating thread pools. Useful for understanding thread pool behavior.
+  
+  Grouping rules:
+  - Removes numeric segments: `pool-1-thread-2` → `pool-thread`
+  - Strips trailing digits: `worker-thread-5` → `worker-thread`
+  - Handles common separators: `-`, `_`, `#`
+  - Examples:
+    - `http-nio-8080-exec-1` → `http-nio-exec`
+    - `GC Thread#54` → `GC Thread`
+    - `CompilerThread0` → `CompilerThread`
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring (applied before grouping).
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only).
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only).
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Thread List
+
+```bash
+ap-query threads profile.jfr
+```
+
+```
+THREAD                             SAMPLES     PCT
+http-nio-8080-exec-1                  1824  15.1%
+http-nio-8080-exec-2                  1653  13.7%
+ScheduledExecutor-1                    892   7.4%
+GC Thread#0                            543   4.5%
+http-nio-8080-exec-3                   498   4.1%
+CompilerThread0                        432   3.6%
+ScheduledExecutor-2                    398   3.3%
+GC Thread#1                            356   3.0%
+http-nio-8080-exec-4                   312   2.6%
+...
+```
+
+### Grouped by Thread Pool
+
+```bash
+ap-query threads profile.jfr --group
+```
+
+```
+GROUP                              SAMPLES     PCT
+http-nio-exec (24 threads)            9432  78.3%
+ScheduledExecutor (4 threads)         1456  12.1%
+GC Thread (8 threads)                  987   8.2%
+CompilerThread (2 threads)             168   1.4%
+```
+
+<Tip>
+  Use `--group` to understand thread pool utilization and identify which pools are most active.
+</Tip>
+
+### Top Threads Only
+
+```bash
+ap-query threads profile.jfr --top 5
+```
+
+Show only the top 5 threads by sample count.
+
+### Top Groups Only
+
+```bash
+ap-query threads profile.jfr --group --top 3
+```
+
+Show only the top 3 thread groups.
+
+### Filter Specific Threads
+
+```bash
+ap-query threads profile.jfr --thread worker
+```
+
+```
+THREAD                             SAMPLES     PCT
+worker-thread-1                       2156  17.9%
+worker-thread-2                       1987  16.5%
+worker-thread-3                       1543  12.8%
+worker-task-processor-1                432   3.6%
+```
+
+### Wall-Clock Thread Analysis
+
+```bash
+ap-query threads profile.jfr --event wall
+```
+
+Show thread distribution for wall-clock time (includes blocking/waiting).
+
+### Compare CPU vs Wall by Thread
+
+Run both and compare:
+
+```bash
+ap-query threads profile.jfr --event cpu --group
+ap-query threads profile.jfr --event wall --group
+```
+
+<Note>
+  Threads with high wall% but low CPU% are likely blocked on I/O or locks. Threads with similar CPU% and wall% are compute-bound.
+</Note>
+
+## Reading the Output
+
+### Individual Threads
+
+```
+http-nio-8080-exec-1      1824   15.1%
+```
+
+This thread was sampled 1,824 times, representing 15.1% of all samples.
+
+### Grouped Threads
+
+```
+http-nio-exec (24 threads)  9432  78.3%
+```
+
+The `http-nio-exec` thread pool has 24 threads that collectively account for 9,432 samples (78.3% of total).
+
+## Thread Grouping Rules
+
+Grouping normalizes thread names by:
+
+1. **Splitting on separators**: `-`, `_`, `#`
+2. **Removing numeric segments**: `1`, `42`, `8080`
+3. **Trimming trailing digits**: `thread5` → `thread`
+
+**Examples:**
+
+| Original | Grouped |
+|----------|--------|
+| `pool-1-thread-2` | `pool-thread` |
+| `http-nio-8080-exec-1` | `http-nio-exec` |
+| `GC Thread#54` | `GC Thread` |
+| `CompilerThread0` | `CompilerThread` |
+| `worker-5` | `worker` |
+
+<Warning>
+  Thread names that don't follow common patterns (no numbers or separators) remain unchanged and won't be grouped.
+</Warning>
+
+## No Thread Info
+
+If the profile lacks thread information:
+
+```bash
+ap-query threads profile.jfr
+```
+
+```
+no thread info in this file
+```
+
+This can happen with:
+- Collapsed-stack text files (no metadata)
+- Some pprof profiles
+- Profiles with thread tracking disabled
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Thread Pool Sizing">
+    Identify if thread pools are over/under-provisioned
+  </Card>
+  
+  <Card title="Workload Distribution">
+    See if work is balanced across threads
+  </Card>
+  
+  <Card title="Blocking Detection">
+    Compare CPU vs wall events to find blocked threads
+  </Card>
+  
+  <Card title="GC Analysis">
+    See how much time GC threads consume
+  </Card>
+</CardGroup>
+
+## Practical Examples
+
+### Find Underutilized Thread Pool
+
+```bash
+ap-query threads profile.jfr --group
+```
+
+If a thread pool has many threads but low sample count, it's underutilized.
+
+### Identify Hot Thread
+
+```bash
+ap-query threads profile.jfr --top 1
+```
+
+The top thread is consuming the most resources. Investigate with:
+
+```bash
+ap-query hot profile.jfr --thread <top-thread-name>
+```
+
+### Detect Thread Imbalance
+
+If individual threads in the same pool have vastly different sample counts, work is not balanced:
+
+```
+worker-1    5000   41.5%   <- doing most work
+worker-2     300    2.5%
+worker-3     250    2.1%
+```
+
+This suggests sticky routing or long-running tasks.
+
+## Integration with Other Commands
+
+Threads command helps identify threads to investigate:
+
+```bash
+# 1. Find hot threads
+ap-query threads profile.jfr --top 3
+
+# 2. Analyze what the hottest thread is doing
+ap-query hot profile.jfr --thread "http-nio-8080-exec-1"
+
+# 3. Deep dive into that thread's call tree
+ap-query tree profile.jfr --thread "http-nio-8080-exec-1"
+```
+
+## See Also
+
+- [`info`](/commands/info) - Shows thread distribution as part of comprehensive triage
+- [`hot`](/commands/hot) - Combine with `--thread` flag to analyze specific threads
+- [`timeline`](/commands/timeline) - Time-based analysis with thread filtering

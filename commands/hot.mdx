@@ -1,0 +1,240 @@
+---
+title: hot
+description: Rank methods by self-time and total-time
+---
+
+The `hot` command produces dual-ranked tables showing the hottest methods in your profile. It's the go-to command for identifying performance bottlenecks.
+
+## Usage
+
+```bash
+ap-query hot <file> [flags]
+```
+
+## What It Shows
+
+Two ranked tables:
+
+1. **RANK BY SELF TIME** - Methods appearing at the top of stacks (doing actual work)
+2. **RANK BY TOTAL TIME** - Methods appearing anywhere in stacks (orchestrating work)
+
+Each table shows:
+- Method name
+- SELF% - Percentage of samples where this is the leaf frame
+- TOTAL% - Percentage of samples containing this method anywhere
+- SAMPLES - Raw sample count for the ranking dimension
+
+## Flags
+
+<ParamField path="--top" type="int" default="10">
+  Limit output rows in each table. Controls how many methods are shown.
+</ParamField>
+
+<ParamField path="--fqn" type="boolean">
+  Show fully-qualified names (full package paths) instead of short names.
+</ParamField>
+
+<ParamField path="--assert-below" type="float" default="0">
+  Exit with status 1 if the top method's self% >= threshold. Useful for CI gates to catch performance regressions.
+  
+  Example: `--assert-below 10.0` fails if any method consumes ≥10% self-time.
+</ParamField>
+
+### Shared Flags
+
+<ParamField path="-e, --event" type="string" default="cpu">
+  Event type: `cpu`, `wall`, `alloc`, `lock`, or hardware counter name.
+</ParamField>
+
+<ParamField path="-t, --thread" type="string">
+  Filter to threads containing this substring.
+</ParamField>
+
+<ParamField path="--from" type="duration">
+  Start of time window (JFR only). Examples: `5s`, `1m30s`, `2m`.
+</ParamField>
+
+<ParamField path="--to" type="duration">
+  End of time window (JFR only). Examples: `10s`, `2m`, `1m30s`.
+</ParamField>
+
+<ParamField path="--no-idle" type="boolean">
+  Remove idle leaf frames from analysis.
+</ParamField>
+
+## Examples
+
+### Basic Usage
+
+```bash
+ap-query hot profile.jfr
+```
+
+```
+=== RANK BY SELF TIME ===
+METHOD                                              SELF%   TOTAL%   SAMPLES
+HashMap.hash                                         8.3%   12.1%       998
+ArrayList.grow                                       6.2%    6.2%       747
+String.hashCode                                      5.1%    8.9%       614
+UserService.validateInput                            4.8%    4.8%       578
+JSONParser.parse                                     4.2%    9.3%       506
+ByteBuffer.put                                       3.9%    3.9%       469
+HashMap.resize                                       3.1%    3.1%       373
+StringBuilder.append                                 2.8%    2.8%       337
+Arrays.copyOf                                        2.3%    2.3%       277
+MessageDigest.update                                 2.1%    2.1%       253
+
+=== RANK BY TOTAL TIME ===
+METHOD                                              SELF%   TOTAL%   SAMPLES
+UserService.processRequest                           2.1%   45.3%      5456
+RequestHandler.handle                                1.2%   38.7%      4661
+HashMap.put                                          1.8%   18.4%      2215
+HashMap.hash                                         8.3%   12.1%       998
+JSONParser.parse                                     4.2%    9.3%       506
+String.hashCode                                      5.1%    8.9%       614
+ArrayList.add                                        0.9%    7.8%       939
+HashMap.get                                          1.3%    6.4%       770
+ArrayList.grow                                       6.2%    6.2%       747
+UserService.validateInput                            4.8%    4.8%       578
+```
+
+### Show More Methods
+
+```bash
+ap-query hot profile.jfr --top 25
+```
+
+Show top 25 methods in each table instead of the default 10.
+
+### Fully-Qualified Names
+
+```bash
+ap-query hot profile.jfr --fqn
+```
+
+```
+=== RANK BY SELF TIME ===
+METHOD                                              SELF%   TOTAL%   SAMPLES
+java.util.HashMap.hash                               8.3%   12.1%       998
+java.util.ArrayList.grow                             6.2%    6.2%       747
+java.lang.String.hashCode                            5.1%    8.9%       614
+com.example.UserService.validateInput                4.8%    4.8%       578
+...
+```
+
+### Allocation Profiling
+
+```bash
+ap-query hot profile.jfr --event alloc
+```
+
+Show methods allocating the most memory.
+
+### CI Performance Gate
+
+```bash
+ap-query hot profile.jfr --assert-below 5.0
+```
+
+Fails (exit code 1) if any method has self-time ≥ 5%:
+
+```
+ERROR: ASSERT FAILED: HashMap.hash self=8.3% >= threshold 5.0%
+```
+
+<Tip>
+  Use in CI pipelines to detect performance regressions where a single method becomes too dominant.
+</Tip>
+
+### Wall-Clock Time for Blocking Analysis
+
+```bash
+ap-query hot profile.jfr --event wall
+```
+
+Show where threads spend wall-clock time (includes blocking/waiting).
+
+### Filter to Specific Threads
+
+```bash
+ap-query hot profile.jfr --thread worker
+```
+
+Analyze only threads with "worker" in their name.
+
+### Time Window
+
+```bash
+ap-query hot profile.jfr --from 30s --to 1m
+```
+
+Analyze only the 30-60 second window of the recording.
+
+### Remove Idle Frames
+
+```bash
+ap-query hot profile.jfr --event wall --no-idle
+```
+
+Exclude idle/waiting frames (useful for wall-clock profiles).
+
+## Understanding Self vs Total
+
+<CardGroup cols={2}>
+  <Card title="High Self Time">
+    Method does significant work itself. Target for micro-optimization or algorithm improvement.
+  </Card>
+  
+  <Card title="High Total Time">
+    Method orchestrates expensive operations. May not need optimization itself, but investigate what it calls.
+  </Card>
+  
+  <Card title="Low Self, High Total">
+    Wrapper/orchestrator method. Use `tree` command to see what it calls.
+  </Card>
+  
+  <Card title="High Self, High Total">
+    Method both does work and calls expensive code. Prime optimization target.
+  </Card>
+</CardGroup>
+
+## Reading the Output
+
+```
+HashMap.hash    8.3%   12.1%    998
+```
+
+- `HashMap.hash` appeared at the top of the stack in 8.3% of samples (doing work)
+- It appeared somewhere in the stack in 12.1% of samples (called by others too)
+- It was seen in 998 samples (absolute count)
+
+<Note>
+  SELF% measures direct cost. TOTAL% measures direct + indirect cost (including everything this method calls).
+</Note>
+
+## When to Use
+
+<CardGroup cols={2}>
+  <Card title="Finding Bottlenecks">
+    Identify which methods consume the most CPU or allocate the most memory
+  </Card>
+  
+  <Card title="Before Deep-Dive">
+    Get method names to investigate with `tree`, `trace`, or `callers` commands
+  </Card>
+  
+  <Card title="Comparing Profiles">
+    Run on multiple profiles to see ranking changes over time
+  </Card>
+  
+  <Card title="CI Validation">
+    Use `--assert-below` to catch performance regressions automatically
+  </Card>
+</CardGroup>
+
+## See Also
+
+- [`info`](/commands/info) - Overview including hot methods plus drill-down
+- [`tree`](/commands/tree) - See what a hot method calls
+- [`trace`](/commands/trace) - Find the hottest path from a method to leaf
+- [`callers`](/commands/callers) - See who calls a hot method
