@@ -1,0 +1,115 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "ap-query",
+  "projectDescription": "CLI for analyzing async-profiler JFR recordings and profiling data",
+  "theme": "aspen",
+  "primaryColor": "#E8590C",
+  "lightColor": "#FF8533",
+  "darkColor": "#B84609",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/profiling-workflow",
+              "concepts/event-types",
+              "concepts/input-formats"
+            ]
+          },
+          {
+            "group": "Command Reference",
+            "pages": [
+              "commands/overview",
+              "commands/info",
+              "commands/hot",
+              "commands/tree",
+              "commands/trace",
+              "commands/callers",
+              "commands/threads",
+              "commands/timeline",
+              "commands/diff",
+              "commands/filter",
+              "commands/collapse",
+              "commands/lines",
+              "commands/events",
+              "commands/script"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/agent-integration",
+              "guides/time-range-filtering",
+              "guides/thread-filtering",
+              "guides/performance-regression",
+              "guides/starlark-scripting",
+              "guides/ci-integration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/async-profiler",
+              "advanced/pprof-support",
+              "advanced/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Scripting API",
+            "pages": [
+              "api/overview",
+              "api/profile",
+              "api/stack",
+              "api/bucket",
+              "api/functions"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Analyze JFR, pprof, and collapsed stack profiles",
+    "Multiple analysis commands (hot, tree, trace, timeline, diff)",
+    "Time-range and thread filtering",
+    "Agent integration via skill templates",
+    "Starlark scripting for custom analysis",
+    "CI/CD integration with assertion gates",
+    "Event type selection (cpu, wall, alloc, lock)",
+    "Cross-profile diffing for regression detection"
+  ],
+  "publicApiSurface": [
+    "ap-query hot <file>",
+    "ap-query tree <file>",
+    "ap-query trace <file>",
+    "ap-query callers <file>",
+    "ap-query threads <file>",
+    "ap-query timeline <file>",
+    "ap-query diff <before> <after>",
+    "ap-query filter <file>",
+    "ap-query collapse <file>",
+    "ap-query lines <file>",
+    "ap-query info <file>",
+    "ap-query events <file>",
+    "ap-query script <file|code>",
+    "ap-query init",
+    "ap-query update",
+    "ap-query version"
+  ]
+}
